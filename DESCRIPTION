@@ -1,0 +1,48 @@
+Package: CaprForExtensions
+Type: Package
+Title: Waveform Extension Table Support for Capr Cohort Definitions
+Version: 0.1.0
+Authors@R: c(
+    person("Jared", "Houghtaling", email = "houghtaling@ohdsi.org", role = c("aut", "cre")),
+    person("Martijn", "Scheumie", email = "scheumie@ohdsi.org", role = c("aut"))
+    )
+Description: Extends the Capr package to support cohort definitions that reference
+    OMOP CDM Extension Tables. Uses a placeholder substitution approach: extension
+    criteria are converted to observation queries with special placeholder markers
+    during compilation, CirceR generates standard SQL treating them as observations,
+    then placeholders are substituted with actual extension table logic in post-processing.
+    This enables leveraging all CirceR features (temporal logic, inclusion rules, attrition)
+    while maintaining simple, robust implementation. Supports custom domains, temporal
+    relationships, and multi-table joins.
+License: Apache License 2.0
+Encoding: UTF-8
+LazyData: true
+Depends:
+    R (>= 4.0.0),
+    Capr (>= 2.0.0)
+Imports:
+    CirceR (>= 1.3.0),
+    methods,
+    jsonlite,
+    glue,
+    dplyr (>= 1.0.0),
+    purrr,
+    stringr,
+    checkmate,
+    rlang
+Suggests:
+    testthat (>= 3.0.0),
+    knitr,
+    rmarkdown,
+    DatabaseConnector,
+    SqlRender,
+    withr,
+    mockery
+Remotes:
+    OHDSI/Capr,
+    OHDSI/CirceR
+VignetteBuilder: knitr
+RoxygenNote: 7.2.3
+Roxygen: list(markdown = TRUE)
+URL: https://github.com/OHDSI/CaprForExtensions
+BugReports: https://github.com/OHDSI/CaprForExtensions/issues

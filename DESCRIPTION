@@ -1,6 +1,6 @@
 Package: CaprForExtensions
 Type: Package
-Title: Waveform Extension Table Support for Capr Cohort Definitions
+Title: Extension Table Support for Capr Cohort Definitions
 Version: 0.1.0
 Authors@R: c(
     person("Jared", "Houghtaling", email = "houghtaling@ohdsi.org", role = c("aut", "cre")),

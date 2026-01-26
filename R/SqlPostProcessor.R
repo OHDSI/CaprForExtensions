@@ -41,7 +41,12 @@ postProcessExtensionSql <- function(
 
   sql <- circe_sql
 
-  # Step 1: Add custom concept sets to #Codesets (if any)
+  # IMPORTANT: Extract placeholder_id -> codeset_id mappings FIRST
+  # before we replace placeholders in #Codesets
+  message("  Step 1: Extracting placeholder-to-codeset mappings...")
+  placeholder_to_codeset <- extractPlaceholderCodesetMappings(sql, extension_metadata)
+
+  # Step 2: Add custom concept sets to #Codesets (if any)
   # Collect all custom concept sets from extension metadata
   custom_concept_sets <- list()
   for (ext_meta in extension_metadata) {
@@ -51,25 +56,145 @@ postProcessExtensionSql <- function(
   }
 
   if (length(custom_concept_sets) > 0) {
-    message("  Step 1: Adding custom concept sets to #Codesets...")
+    message("  Step 2: Adding custom concept sets to #Codesets...")
     sql <- substituteCustomConceptSets(sql, custom_concept_sets)
   }
 
-  # Step 2: Process each extension query
+  # Step 3: Process each extension query using the extracted mappings
   for (i in seq_along(extension_metadata)) {
     ext_meta <- extension_metadata[[i]]
 
-    message("  Step ", i + 1, ": Substituting extension table: ", ext_meta$table_name)
+    message("  Step ", i + 1 + length(custom_concept_sets), ": Substituting extension table: ", ext_meta$table_name)
+
+    # Get codeset_id for this placeholder
+    placeholder_id <- ext_meta$placeholder_id
+    codeset_id <- placeholder_to_codeset[[as.character(placeholder_id)]]
+
+    if (is.null(codeset_id)) {
+      warning("Could not find codeset_id for placeholder ", placeholder_id)
+      next
+    }
 
     # Substitute this extension query
-    sql <- substituteExtensionQuery(
+    sql <- substituteExtensionQueryWithCodeset(
       sql,
       ext_meta,
+      codeset_id,
       schema
     )
   }
 
   message("Post-processing complete")
+
+  return(sql)
+}
+
+#' Extract Placeholder to Codeset ID Mappings
+#'
+#' @description
+#' Extract the mapping of placeholder_id -> codeset_id from the SQL
+#' BEFORE we do any substitutions. This is critical because we need to know
+#' which codeset_id CirceR assigned to each placeholder, but once we substitute
+#' the custom concept sets, the placeholders are gone.
+#'
+#' @param sql Character. SQL text with #Codesets table
+#' @param extension_metadata List. Extension metadata containing placeholder_ids
+#' @return Named list. Keys are placeholder_ids (as strings), values are codeset_ids
+#'
+#' @keywords internal
+extractPlaceholderCodesetMappings <- function(sql, extension_metadata) {
+  mappings <- list()
+
+  # Get all placeholder IDs from metadata
+  placeholder_ids <- sapply(extension_metadata, function(meta) meta$placeholder_id)
+
+  # For each placeholder, find which codeset_id it was assigned
+  for (placeholder_id in placeholder_ids) {
+    # Find lines containing this placeholder concept_id
+    sql_lines <- strsplit(sql, "\n")[[1]]
+    concept_line_idx <- grep(sprintf("concept_id\\s+in\\s*\\(\\s*%d\\s*\\)", placeholder_id),
+                             sql_lines, perl = TRUE, ignore.case = TRUE)
+
+    if (length(concept_line_idx) == 0) {
+      warning("Could not find placeholder concept_id ", placeholder_id, " in SQL")
+      next
+    }
+
+    # Search backwards from this line to find the "SELECT N as codeset_id" line
+    codeset_id <- NULL
+    for (i in concept_line_idx[1]:1) {
+      if (grepl("SELECT\\s+(\\d+)\\s+as\\s+codeset_id", sql_lines[i], perl = TRUE, ignore.case = TRUE)) {
+        codeset_match <- regexpr("SELECT\\s+(\\d+)\\s+as\\s+codeset_id", sql_lines[i], perl = TRUE, ignore.case = TRUE)
+        codeset_text <- regmatches(sql_lines[i], codeset_match)
+        codeset_id <- as.integer(gsub(".*SELECT\\s+(\\d+)\\s+as\\s+codeset_id.*", "\\1", codeset_text, perl = TRUE))
+        break
+      }
+    }
+
+    if (!is.null(codeset_id)) {
+      mappings[[as.character(placeholder_id)]] <- codeset_id
+      message("    Mapped placeholder ", placeholder_id, " -> codeset_id ", codeset_id)
+    }
+  }
+
+  return(mappings)
+}
+
+#' Substitute Extension Query with Known Codeset ID
+#'
+#' @description
+#' Substitute extension query using a pre-extracted codeset_id.
+#'
+#' @param sql Character. SQL text
+#' @param ext_meta List. Extension metadata
+#' @param codeset_id Integer. The codeset_id assigned by CirceR
+#' @param schema Character. Schema name
+#'
+#' @return Character. Modified SQL
+#'
+#' @keywords internal
+substituteExtensionQueryWithCodeset <- function(sql, ext_meta, codeset_id, schema) {
+  table_name <- ext_meta$table_name
+  placeholder_string <- ext_meta$placeholder_string
+
+  message("    Codeset ID: ", codeset_id)
+  message("    Target table: ", table_name)
+
+  # Decode placeholder string to get components
+  decoded <- decodePlaceholderString(placeholder_string)
+
+  # Generate table alias
+  if (grepl("^waveform_", table_name)) {
+    suffix <- gsub("^waveform_", "", table_name)
+    table_alias <- tolower(substr(suffix, 1, min(3, nchar(suffix))))
+  } else {
+    table_alias <- tolower(substr(table_name, 1, min(3, nchar(table_name))))
+  }
+
+  # Find the observation block that uses this codeset_id
+  pattern <- sprintf(
+    "(?s)(-- Begin Observation Criteria.*?FROM\\s+%s\\.OBSERVATION\\s+[a-z].*?codeset_id\\s*=\\s*%d.*?-- End Observation Criteria)",
+    escapeRegex(schema),
+    codeset_id
+  )
+
+  if (!grepl(pattern, sql, perl = TRUE, ignore.case = TRUE)) {
+    message("    Could not find observation block with codeset_id ", codeset_id)
+    return(sql)
+  }
+
+  # Build replacement SQL block
+  replacement_sql <- buildExtensionQueryBlock(
+    table_name = table_name,
+    table_alias = table_alias,
+    decoded = decoded,
+    schema = schema
+  )
+
+  # Replace the entire block
+  sql <- gsub(pattern, replacement_sql, sql, perl = TRUE, ignore.case = TRUE)
+
+  message("    ✓ Replaced observation criteria block with extension table query")
 
   return(sql)
 }
@@ -217,27 +342,45 @@ buildExtensionQueryBlock <- function(table_name, table_alias, decoded, schema) {
       # Determine event_id field (extension table's primary key)
       event_id_field <- paste0(table_name, "_id")
 
+      # Determine which table the date field comes from
+      # Check if date field is qualified (contains ".")
+      if (grepl("\\.", decoded$date_field)) {
+        # Use as-is if qualified
+        date_ref <- decoded$date_field
+      } else {
+        # For waveform tables, date typically comes from parent (occurrence)
+        # For other tables, may come from child - make it configurable
+        date_alias <- if (grepl("waveform", table_name, ignore.case = TRUE)) {
+          parent_alias  # waveform_feature dates come from waveform_occurrence
+        } else {
+          table_alias   # default to extension table
+        }
+        date_ref <- paste0(date_alias, ".", decoded$date_field)
+      }
+
       # Build SQL with join
+      # Note: visit_occurrence_id is set to NULL since it's not required for extension queries
       sql <- sprintf(
 "-- Begin %s Criteria (Extension Table)
 select C.person_id, C.%s as event_id, C.start_date, C.END_DATE,
        C.visit_occurrence_id, C.start_date as sort_date
 from
 (
-  select %s.person_id, %s.%s, %s.visit_occurrence_id,
-         %s.%s as start_date, DATEADD(day,1,%s.%s) as end_date
+  select %s.person_id, %s.%s, CAST(NULL AS INTEGER) as visit_occurrence_id,
+         %s as start_date, DATEADD(day,1,%s) as end_date
   FROM %s.%s %s
   JOIN %s.%s %s ON %s.%s = %s.%s",
         table_name,
         event_id_field,
-        parent_alias, table_alias, event_id_field, parent_alias,
-        table_alias, decoded$date_field, table_alias, decoded$date_field,
+        parent_alias, table_alias, event_id_field,
+        date_ref, date_ref,
         schema, table_name, table_alias,
         schema, parent_table, parent_alias, table_alias, join_field, parent_alias, join_field
       )
 
     } else {
       # Simple case without join
+      # Note: visit_occurrence_id is set to NULL since it's not required for extension queries
       event_id_field <- paste0(table_name, "_id")
       sql <- sprintf(
 "-- Begin %s Criteria (Extension Table)
@@ -245,18 +388,19 @@ select C.person_id, C.%s as event_id, C.start_date, C.END_DATE,
        C.visit_occurrence_id, C.start_date as sort_date
 from
 (
-  select %s.person_id, %s.%s, %s.visit_occurrence_id,
+  select %s.person_id, %s.%s, CAST(NULL AS INTEGER) as visit_occurrence_id,
          %s.%s as start_date, DATEADD(day,1,%s.%s) as end_date
   FROM %s.%s %s",
         table_name,
         event_id_field,
-        table_alias, table_alias, event_id_field, table_alias,
+        table_alias, table_alias, event_id_field,
         table_alias, decoded$date_field, table_alias, decoded$date_field,
         schema, table_name, table_alias
       )
     }
   } else {
     # No join info
+    # Note: visit_occurrence_id is set to NULL since it's not required for extension queries
     event_id_field <- paste0(table_name, "_id")
     sql <- sprintf(
 "-- Begin %s Criteria (Extension Table)
@@ -264,12 +408,12 @@ select C.person_id, C.%s as event_id, C.start_date, C.END_DATE,
        C.visit_occurrence_id, C.start_date as sort_date
 from
 (
-  select %s.person_id, %s.%s, %s.visit_occurrence_id,
+  select %s.person_id, %s.%s, CAST(NULL AS INTEGER) as visit_occurrence_id,
          %s.%s as start_date, DATEADD(day,1,%s.%s) as end_date
   FROM %s.%s %s",
       table_name,
       event_id_field,
-      table_alias, table_alias, event_id_field, table_alias,
+      table_alias, table_alias, event_id_field,
       table_alias, decoded$date_field, table_alias, decoded$date_field,
       schema, table_name, table_alias
     )
@@ -632,81 +776,46 @@ substituteCustomConceptSets <- function(sql, custom_concept_sets) {
     return(sql)
   }
 
-  # Find the maximum codeset_id already used by CirceR
-  # Pattern: SELECT N as codeset_id
-  existing_codeset_ids <- as.integer(
-    gsub(".*SELECT\\s+(\\d+)\\s+as\\s+codeset_id.*", "\\1",
-         grep("SELECT\\s+\\d+\\s+as\\s+codeset_id", strsplit(sql, "\n")[[1]],
-              value = TRUE, ignore.case = TRUE, perl = TRUE))
-  )
-
-  if (length(existing_codeset_ids) > 0) {
-    max_codeset_id <- max(existing_codeset_ids, na.rm = TRUE)
-    message("    Found existing codeset_ids 0-", max_codeset_id, " from CirceR")
-  } else {
-    max_codeset_id <- -1
-  }
-
-  # Build custom concept set SELECT statements
-  # Match CirceR's format: SELECT N as codeset_id, c.concept_id FROM (select distinct ...) C
-  # Assign new codeset_ids starting from max_codeset_id + 1
-  custom_union_blocks <- character()
-  next_codeset_id <- max_codeset_id + 1
+  # For each custom concept set, find which codeset_id CirceR assigned to its placeholder
+  # and replace that codeset's query with the real concepts
 
   for (i in seq_along(custom_concept_sets)) {
     cset <- custom_concept_sets[[i]]
 
-    # Auto-assign codeset_id if not specified or if it would conflict
-    if (is.null(cset$codeset_id) || cset$codeset_id %in% existing_codeset_ids) {
-      codeset_id <- next_codeset_id
-      next_codeset_id <- next_codeset_id + 1
-      if (!is.null(cset$codeset_id) && cset$codeset_id %in% existing_codeset_ids) {
-        message("    WARNING: Custom concept set ", i, " codeset_id ", cset$codeset_id,
-                " conflicts with CirceR. Reassigning to ", codeset_id)
-      }
-    } else {
-      codeset_id <- cset$codeset_id
-    }
-
+    placeholder_id <- cset$placeholder_id
     concept_ids <- cset$concept_ids
 
-    # Build the inner SELECT with all concept IDs for this set
+    if (is.null(placeholder_id) || is.null(concept_ids)) {
+      next
+    }
+
+    message("    Replacing placeholder ", placeholder_id, " with ", length(concept_ids), " real concept(s)")
+
+    # Find the line that queries for this placeholder in CONCEPT table
+    # Pattern: concept_id in (placeholder_id)
+    placeholder_pattern <- sprintf("concept_id\\s+in\\s*\\(\\s*%d\\s*\\)", placeholder_id)
+
+    # Build replacement: direct SELECT of real concept IDs (not from CONCEPT table)
     inner_selects <- sapply(concept_ids, function(cid) {
       sprintf("  select %s as concept_id", cid)
     })
-
     inner_sql <- paste(inner_selects, collapse = "\nUNION\n")
 
-    # Wrap in CirceR's pattern to match existing format
-    # This avoids alias conflicts and follows the same structure
-    custom_block <- sprintf(
-      "SELECT %d as codeset_id, c.concept_id FROM (select distinct I.concept_id FROM\n(\n%s\n) I\n) C",
-      codeset_id,
-      inner_sql
+    # The replacement query
+    replacement_query <- sprintf("select distinct I.concept_id FROM\n(\n%s\n) I", inner_sql)
+
+    # Replace the CONCEPT table query with our direct SELECT
+    # Original: select concept_id from omopwave.CONCEPT where (concept_id in (999905923))
+    # Replace with: select distinct I.concept_id FROM\n(\n  select 2082499949 as concept_id\n) I
+
+    # Find and replace the pattern
+    sql <- gsub(
+      sprintf("select\\s+concept_id\\s+from\\s+\\S+\\.CONCEPT\\s+where\\s+\\(%s\\)", placeholder_pattern),
+      replacement_query,
+      sql,
+      ignore.case = TRUE,
+      perl = TRUE
     )
-
-    custom_union_blocks <- c(custom_union_blocks, custom_block)
-  }
-
-  if (length(custom_union_blocks) > 0) {
-    # Join all custom blocks with UNION ALL
-    all_custom <- paste(custom_union_blocks, collapse = " UNION ALL\n")
-
-    # Find the closing semicolon of the INSERT INTO #Codesets statement
-    # Insert our custom concept sets before the semicolon
-
-    pattern <- "(INSERT INTO #Codesets[^;]+)(;)"
-
-    replacement <- paste0(
-      "\\1",
-      " UNION ALL\n",
-      all_custom,
-      "\\2"
-    )
-
-    sql <- gsub(pattern, replacement, sql, perl = TRUE)
-
-    message("  Added ", length(custom_union_blocks), " custom concept set(s) to #Codesets")
   }
 
   return(sql)

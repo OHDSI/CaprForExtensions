@@ -106,7 +106,7 @@ convertCustomQueryToObservation <- function(custom_query) {
   obs_query <- Capr::observation(placeholder_concept)
 
   # 7. Store extension metadata in query attributes for later retrieval
-  attr(obs_query, "extension_metadata") <- list(
+  metadata <- list(
     original_type = "CustomDomainQuery",
     domain_id = domain@domainId,
     table_name = domain@tableName,
@@ -116,6 +116,21 @@ convertCustomQueryToObservation <- function(custom_query) {
     join_info = join_info,
     date_field = domain@startDateField
   )
+
+  # 8. Add custom concept sets if we have real concept IDs
+  # These need to be inserted into #Codesets so CirceR can reference them
+  # NOTE: We store the placeholder_id so we can find which codeset_id CirceR assigned to it
+  if (!is.null(concept_ids) && length(concept_ids) > 0) {
+    metadata$custom_concept_sets <- list(
+      list(
+        placeholder_id = placeholder_id,  # Track placeholder to find CirceR's codeset_id
+        concept_ids = concept_ids,
+        name = paste0("Extension:", domain@domainName)
+      )
+    )
+  }
+
+  attr(obs_query, "extension_metadata") <- metadata
 
   return(obs_query)
 }
@@ -200,9 +215,9 @@ extractConceptIds <- function(concept_set) {
   # ConceptSet structure varies, handle different formats
   if (inherits(concept_set, "ConceptSet")) {
     # Capr ConceptSet object
-    if (!is.null(concept_set@Expression$items)) {
-      concept_ids <- sapply(concept_set@Expression$items, function(item) {
-        item$concept$CONCEPT_ID
+    if (length(concept_set@Expression) > 0) {
+      concept_ids <- sapply(concept_set@Expression, function(item) {
+        item@Concept@concept_id
       })
       return(as.integer(concept_ids))
     }

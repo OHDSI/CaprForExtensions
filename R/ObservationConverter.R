@@ -72,9 +72,9 @@ convertCustomQueryToObservation <- function(custom_query) {
     concept_ids <- extractConceptIds(custom_query$conceptSet)
   }
 
-  # 2. Generate UNIQUE placeholder ID (concept set identifier) based on table, concepts, and filters
-  # This ensures each query gets a different placeholder ID
-  placeholder_id <- generatePlaceholderConceptId(
+  # 2. Generate UNIQUE placeholder concept set ID based on table, concepts, and filters
+  # This ensures each query gets a different concept set identifier
+  placeholder_id <- generatePlaceholderConceptSetId(
     domain@tableName,
     concept_ids = concept_ids,
     filters = custom_query$attributes
@@ -108,6 +108,7 @@ convertCustomQueryToObservation <- function(custom_query) {
   # 7. Store extension metadata in query attributes for later retrieval
   metadata <- list(
     original_type = "CustomDomainQuery",
+    name = domain@domainName,          # Required by exportToAtlasJson for concept set matching
     domain_id = domain@domainId,
     table_name = domain@tableName,
     placeholder_id = placeholder_id,
@@ -159,9 +160,9 @@ convertExtensionQueryToObservation <- function(ext_query) {
     )
   }
 
-  # 2. Generate UNIQUE placeholder ID (concept set identifier) based on table and filters
+  # 2. Generate UNIQUE placeholder concept set ID based on table and filters
   # ExtensionQuery doesn't have concept_ids, but filters make it unique
-  placeholder_id <- generatePlaceholderConceptId(
+  placeholder_id <- generatePlaceholderConceptSetId(
     ext_query@tableName,
     concept_ids = NULL,
     filters = filters

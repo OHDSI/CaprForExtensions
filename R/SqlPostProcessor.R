@@ -108,9 +108,29 @@ extractPlaceholderCodesetMappings <- function(sql, extension_metadata) {
   # Get all placeholder IDs from metadata
   placeholder_ids <- sapply(extension_metadata, function(meta) meta$placeholder_id)
 
-  # For each placeholder, find which codeset_id it was assigned
+  # For each placeholder, find which codeset_id it was assigned.
+  # Primary: use the codeset_id already injected by buildExtendedCohortQuery from the JSON
+  # (reliable after Atlas round-trips where real concept IDs replaced placeholders).
+  # Fallback: scan the SQL for the placeholder concept ID (original fresh-compile path).
   for (placeholder_id in placeholder_ids) {
-    # Find lines containing this placeholder_id (used as a concept_id value)
+    # Primary: pre-computed codeset_id injected from the JSON's ConceptSets
+    pre_computed <- NULL
+    for (meta in extension_metadata) {
+      if (!is.null(meta$placeholder_id) && meta$placeholder_id == placeholder_id &&
+          !is.null(meta$codeset_id)) {
+        pre_computed <- as.integer(meta$codeset_id)
+        break
+      }
+    }
+
+    if (!is.null(pre_computed)) {
+      mappings[[as.character(placeholder_id)]] <- pre_computed
+      message("    Mapped placeholder ", placeholder_id, " -> codeset_id ", pre_computed,
+              " (from JSON ConceptSets)")
+      next
+    }
+
+    # Fallback: search SQL for concept_id in (placeholder_id) and scan back to codeset_id
     sql_lines <- strsplit(sql, "\n")[[1]]
     concept_line_idx <- grep(sprintf("concept_id\\s+in\\s*\\(\\s*%d\\s*\\)", placeholder_id),
                              sql_lines, perl = TRUE, ignore.case = TRUE)
@@ -120,20 +140,21 @@ extractPlaceholderCodesetMappings <- function(sql, extension_metadata) {
       next
     }
 
-    # Search backwards from this line to find the "SELECT N as codeset_id" line
     codeset_id <- NULL
     for (i in concept_line_idx[1]:1) {
       if (grepl("SELECT\\s+(\\d+)\\s+as\\s+codeset_id", sql_lines[i], perl = TRUE, ignore.case = TRUE)) {
         codeset_match <- regexpr("SELECT\\s+(\\d+)\\s+as\\s+codeset_id", sql_lines[i], perl = TRUE, ignore.case = TRUE)
-        codeset_text <- regmatches(sql_lines[i], codeset_match)
-        codeset_id <- as.integer(gsub(".*SELECT\\s+(\\d+)\\s+as\\s+codeset_id.*", "\\1", codeset_text, perl = TRUE))
+        codeset_text  <- regmatches(sql_lines[i], codeset_match)
+        codeset_id    <- as.integer(gsub(".*SELECT\\s+(\\d+)\\s+as\\s+codeset_id.*", "\\1",
+                                         codeset_text, perl = TRUE))
         break
       }
     }
 
     if (!is.null(codeset_id)) {
       mappings[[as.character(placeholder_id)]] <- codeset_id
-      message("    Mapped placeholder ", placeholder_id, " -> codeset_id ", codeset_id)
+      message("    Mapped placeholder ", placeholder_id, " -> codeset_id ", codeset_id,
+              " (from SQL scan)")
     }
   }
 

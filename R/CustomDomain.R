@@ -377,9 +377,10 @@ createCustomQueryFunction <- function(domain_id) {
   attr(func, "domain_id") <- domain_id
   attr(func, "domain_name") <- domain@domainName
 
-  # Assign to parent environment (so it's available to users)
+  # Assign to global environment so the function is available everywhere,
+  # regardless of how deep registerCustomDomain() was called.
   func_name <- domain_id
-  assign(func_name, func, envir = parent.frame(2))
+  assign(func_name, func, envir = globalenv())
 
   message("Created query function: ", func_name, "()")
 

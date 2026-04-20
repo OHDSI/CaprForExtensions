@@ -13,6 +13,8 @@ export(previewSubstitutions)
 export(extractPlaceholdersFromSql)
 export(extractExtensionMetadata)
 export(convertCustomQueryToObservation)
+export(exportToAtlasJson)
+export(importFromAtlasJson)
 
 # Export custom domain functions
 export(registerCustomDomain)

@@ -20,22 +20,23 @@ PLACEHOLDER_FILTER <- "FILTER"
 PLACEHOLDER_JOIN <- "JOIN"
 PLACEHOLDER_DATE <- "DATE"
 
-#' Generate Unique Placeholder ID
+#' Generate Unique Placeholder Concept Set ID
 #'
 #' @description
-#' Generate a unique identifier for a placeholder concept set based on table name,
-#' concept IDs, and filters. This ID is used temporarily as a concept_id value in the
-#' placeholder concept set during compilation. Uses high numbers (999900000+) unlikely
-#' to conflict with real concept IDs. The placeholder concept set can contain one or
-#' more actual concept IDs from the extension table.
+#' Generate a unique identifier for a **placeholder concept set** based on table name,
+#' concept IDs, and filters. This ID is used as the CirceR concept set identifier (an
+#' integer index, not an OMOP concept_id) for the placeholder observation query created
+#' during compilation. Uses high numbers (999900000+) unlikely to conflict with real
+#' concept set indices. The placeholder concept set can contain one or more actual
+#' concept IDs from the extension table.
 #'
 #' @param table_name Character. Extension table name
 #' @param concept_ids Integer vector. Concept IDs used in the query (optional)
 #' @param filters List. Filter attributes (optional)
-#' @return Integer. Unique placeholder ID (used as concept set identifier)
+#' @return Integer. Unique placeholder concept set identifier
 #'
 #' @keywords internal
-generatePlaceholderConceptId <- function(table_name, concept_ids = NULL, filters = NULL) {
+generatePlaceholderConceptSetId <- function(table_name, concept_ids = NULL, filters = NULL) {
   # Build unique string from all components
   unique_string <- table_name
 
@@ -63,9 +64,11 @@ generatePlaceholderConceptId <- function(table_name, concept_ids = NULL, filters
     }
   }
 
-  # Generate hash from unique string
-  hash_val <- sum(utf8ToInt(unique_string)) %% 100000
-  999900000 + hash_val
+  # Use a proper hash to avoid collisions from strings with equal character-code sums
+  # (the previous sum(utf8ToInt()) approach was commutative and therefore collision-prone)
+  hash_hex <- digest::digest(unique_string, algo = "xxhash32", serialize = FALSE)
+  hash_val <- as.integer(strtoi(substr(hash_hex, 1, 7), base = 16L)) %% 100000L
+  999900000L + hash_val
 }
 
 # Helper for %||% operator

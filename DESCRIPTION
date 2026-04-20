@@ -24,6 +24,7 @@ Imports:
     CirceR (>= 1.3.0),
     methods,
     jsonlite,
+    digest,
     glue,
     dplyr (>= 1.0.0),
     purrr,

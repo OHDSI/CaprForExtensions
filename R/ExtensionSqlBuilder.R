@@ -46,6 +46,22 @@ buildExtendedCohortQuery <- function(
   message("Building extended cohort query with ", length(ext_metadata$extensionQueries),
           " extension criteria...")
 
+  # Enrich extension metadata with the codeset_id directly from the JSON's ConceptSets.
+  # This is the canonical mapping because CirceR uses ConceptSets[i]$id as its codeset_id.
+  # Without this, post-processing must scan the SQL for the placeholder concept ID, which
+  # fails after an Atlas round-trip where real concept IDs replace the placeholders.
+  parsed_json <- jsonlite::fromJSON(extended_cohort_json, simplifyVector = FALSE)
+  ext_metadata$extensionQueries <- lapply(ext_metadata$extensionQueries, function(q) {
+    expected_name <- paste0("Extension:", q$name)
+    for (cs in parsed_json$ConceptSets) {
+      if (!is.null(cs$name) && cs$name == expected_name) {
+        q$codeset_id <- cs$id   # inject the confirmed codeset_id
+        break
+      }
+    }
+    q
+  })
+
   # Generate SQL using standard CirceR (treats placeholders as observation queries)
   message("  Generating base SQL via CirceR...")
   circe_sql <- CirceR::buildCohortQuery(extended_cohort_json, options)

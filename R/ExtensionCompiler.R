@@ -385,10 +385,13 @@ exportToAtlasJson <- function(json_str,
 
     matching_cs_id <- NULL
 
+    # Use an exact name match ("Extension:<queryName>") rather than a substring search.
+    # A grepl/fixed substring match would cause a short query name like "qtc" to
+    # incorrectly match a concept set named "Extension:qtc_prolonged".
+    expected_cs_name <- paste0("Extension:", query_name)
     for (cs_id in names(ext_concept_sets)) {
       cs_info <- ext_concept_sets[[cs_id]]
-      # Match if concept set name contains the query name
-      if (!is.null(cs_info$name) && grepl(query_name, cs_info$name, fixed = TRUE)) {
+      if (!is.null(cs_info$name) && cs_info$name == expected_cs_name) {
         matching_cs_id <- cs_info$id
         break
       }
@@ -399,36 +402,124 @@ exportToAtlasJson <- function(json_str,
       next
     }
 
-    # Find observation with this CodesetId and embed metadata
-    if (!is.null(parsed$PrimaryCriteria) &&
-        !is.null(parsed$PrimaryCriteria$CriteriaList)) {
+    # Replace the placeholder concept ID(s) in the concept set expression with the
+    # real concept IDs from the extension metadata.
+    # The compiled JSON has a single item whose CONCEPT_ID is the 999900000+ placeholder;
+    # we swap it out for proper items built from ext_query$concept_ids so that Atlas
+    # displays the true concepts rather than the internal placeholder.
+    real_concept_ids <- ext_query$concept_ids
+    cs_idx <- ext_concept_sets[[as.character(matching_cs_id)]]$index
 
-      for (j in seq_along(parsed$PrimaryCriteria$CriteriaList)) {
-        criterion <- parsed$PrimaryCriteria$CriteriaList[[j]]
+    if (!is.null(real_concept_ids) && length(real_concept_ids) > 0) {
+      # Build one item per real concept ID using the minimal Atlas concept set item structure
+      real_items <- lapply(as.integer(real_concept_ids), function(cid) {
+        list(
+          concept = list(
+            CONCEPT_ID         = cid,
+            CONCEPT_NAME       = paste0("Concept ", cid),
+            STANDARD_CONCEPT   = "S",
+            INVALID_REASON     = "V",
+            CONCEPT_CODE       = as.character(cid),
+            DOMAIN_ID          = "Observation",
+            VOCABULARY_ID      = "None",
+            CONCEPT_CLASS_ID   = "Undefined"
+          ),
+          isExcluded         = FALSE,
+          includeDescendants = FALSE,
+          includeMapped      = FALSE
+        )
+      })
+      parsed$ConceptSets[[cs_idx]]$expression$items <- real_items
+      message("Replaced placeholder concept items with ", length(real_items),
+              " real concept(s) in concept set '", parsed$ConceptSets[[cs_idx]]$name, "'")
+    } else {
+      # No real concept IDs — clear items so Atlas shows an empty concept set
+      parsed$ConceptSets[[cs_idx]]$expression$items <- list()
+      message("No real concept IDs for query '", query_name,
+              "'; concept set expression left empty.")
+    }
 
-        if (!is.null(criterion$Observation) &&
-            !is.null(criterion$Observation$CodesetId) &&
-            criterion$Observation$CodesetId == matching_cs_id) {
+    # Search for an Observation using matching_cs_id across all criteria locations:
+    #   PrimaryCriteria$CriteriaList, AdditionalCriteria groups, and InclusionRules groups.
+    # Handles two nesting styles:
+    #   - criterion$Observation            (PrimaryCriteria / AdditionalCriteria)
+    #   - criterion$Criteria$Observation   (InclusionRules / AdditionalCriteria groups)
+    embedInObservation <- function(criteria_list, cs_id) {
+      for (j in seq_along(criteria_list)) {
+        criterion <- criteria_list[[j]]
 
-          # Serialize this specific extension query to JSON
+        # Determine which nesting style is used and get a mutable reference path
+        obs      <- criterion$Observation %||% criterion$Criteria$Observation
+        obs_path <- if (!is.null(criterion$Observation)) "Observation" else "Criteria$Observation"
+
+        obs_cs_id <- obs$CodesetId  # may be NULL (Bug 4 guard)
+        if (!is.null(obs) &&
+            !is.null(obs_cs_id) &&
+            identical(as.integer(obs_cs_id), as.integer(cs_id))) {
           query_json <- jsonlite::toJSON(
-            ext_query,
-            auto_unbox = TRUE,
-            null = "null",
-            pretty = FALSE
+            ext_query, auto_unbox = TRUE, null = "null", pretty = FALSE
           )
+          embedded_value <- list(Text = as.character(query_json), Op = "contains")
 
-          # Embed in ValueAsString
-          parsed$PrimaryCriteria$CriteriaList[[j]]$Observation$ValueAsString <- list(
-            Text = as.character(query_json),
-            Op = "contains"
-          )
+          if (obs_path == "Observation") {
+            criteria_list[[j]]$Observation$ValueAsString <- embedded_value
+          } else {
+            criteria_list[[j]]$Criteria$Observation$ValueAsString <- embedded_value
+          }
 
           message("Embedded extension metadata for query '", query_name,
-                  "' in observation with CodesetId ", matching_cs_id)
-          break
+                  "' in observation with CodesetId ", cs_id)
+          return(list(found = TRUE, criteria_list = criteria_list))
         }
       }
+      return(list(found = FALSE, criteria_list = criteria_list))
+    }
+
+    embedded <- FALSE
+
+    # 1. PrimaryCriteria
+    if (!embedded && !is.null(parsed$PrimaryCriteria$CriteriaList)) {
+      result <- embedInObservation(parsed$PrimaryCriteria$CriteriaList, matching_cs_id)
+      if (result$found) {
+        parsed$PrimaryCriteria$CriteriaList <- result$criteria_list
+        embedded <- TRUE
+      }
+    }
+
+    # 2. AdditionalCriteria (nested CriteriaList inside groups)
+    if (!embedded && !is.null(parsed$AdditionalCriteria)) {
+      for (grp_idx in seq_along(parsed$AdditionalCriteria)) {
+        grp <- parsed$AdditionalCriteria[[grp_idx]]
+        if (!is.null(grp$CriteriaList)) {
+          result <- embedInObservation(grp$CriteriaList, matching_cs_id)
+          if (result$found) {
+            parsed$AdditionalCriteria[[grp_idx]]$CriteriaList <- result$criteria_list
+            embedded <- TRUE
+            break
+          }
+        }
+      }
+    }
+
+    # 3. InclusionRules (each rule has expression$CriteriaList)
+    if (!embedded && !is.null(parsed$InclusionRules)) {
+      for (rule_idx in seq_along(parsed$InclusionRules)) {
+        rule_criteria <- parsed$InclusionRules[[rule_idx]]$expression$CriteriaList
+        if (!is.null(rule_criteria)) {
+          result <- embedInObservation(rule_criteria, matching_cs_id)
+          if (result$found) {
+            parsed$InclusionRules[[rule_idx]]$expression$CriteriaList <- result$criteria_list
+            embedded <- TRUE
+            break
+          }
+        }
+      }
+    }
+
+    if (!embedded) {
+      warning("Could not locate an Observation with CodesetId ", matching_cs_id,
+              " for extension query '", query_name,
+              "' in PrimaryCriteria, AdditionalCriteria, or InclusionRules.")
     }
   }
 
@@ -505,49 +596,84 @@ importFromAtlasJson <- function(json_str,
     return(json_str)
   }
 
-  # Collect extension queries from observations
+  # Collect extension queries from observations across all criteria locations
   extension_queries <- list()
 
-  if (!is.null(parsed$PrimaryCriteria) &&
-      !is.null(parsed$PrimaryCriteria$CriteriaList)) {
+  # Helper: scan a flat CriteriaList for observations belonging to extension concept sets.
+  # Handles two nesting styles:
+  #   - criterion$Observation            (PrimaryCriteria / AdditionalCriteria)
+  #   - criterion$Criteria$Observation   (InclusionRules / AdditionalCriteria groups)
+  # Returns the (potentially modified) criteria_list.
+  extractFromCriteriaList <- function(criteria_list, location_label) {
+    for (i in seq_along(criteria_list)) {
+      criterion <- criteria_list[[i]]
 
-    for (i in seq_along(parsed$PrimaryCriteria$CriteriaList)) {
-      criterion <- parsed$PrimaryCriteria$CriteriaList[[i]]
+      obs      <- criterion$Observation %||% criterion$Criteria$Observation
+      obs_path <- if (!is.null(criterion$Observation)) "Observation" else "Criteria$Observation"
+      cs_id    <- obs$CodesetId  # may be NULL – Bug 4 guard
 
-      if (!is.null(criterion$Observation)) {
-        obs <- criterion$Observation
-        cs_id <- obs$CodesetId
+      if (!is.null(obs) &&
+          !is.null(cs_id) &&
+          !is.null(ext_concept_sets[[as.character(cs_id)]])) {
 
-        # Check if this observation uses an extension concept set
-        if (!is.null(cs_id) && !is.null(ext_concept_sets[[as.character(cs_id)]])) {
+        if (!is.null(obs$ValueAsString) && !is.null(obs$ValueAsString$Text)) {
+          ext_query <- tryCatch(
+            jsonlite::fromJSON(obs$ValueAsString$Text, simplifyVector = FALSE),
+            error = function(e) {
+              warning("Failed to parse extension metadata from observation ",
+                      "(", location_label, ") with CodesetId ", cs_id, ": ", e$message)
+              NULL
+            }
+          )
 
-          # Extract metadata from ValueAsString if present
-          if (!is.null(obs$ValueAsString) && !is.null(obs$ValueAsString$Text)) {
-            ext_metadata_json <- obs$ValueAsString$Text
+          if (!is.null(ext_query)) {
+            extension_queries <<- c(extension_queries, list(ext_query))
+            message("Extracted extension metadata for query '", ext_query$name,
+                    "' from ", location_label, " observation with CodesetId ", cs_id)
 
-            # Parse extension query metadata
-            ext_query <- tryCatch({
-              jsonlite::fromJSON(ext_metadata_json, simplifyVector = FALSE)
-            }, error = function(e) {
-              warning("Failed to parse extension metadata from observation with CodesetId ",
-                      cs_id, ": ", e$message)
-              return(NULL)
-            })
-
-            if (!is.null(ext_query)) {
-              extension_queries <- c(extension_queries, list(ext_query))
-
-              cs_info <- ext_concept_sets[[as.character(cs_id)]]
-              message("Extracted extension metadata for query '", ext_query$name,
-                      "' from observation with CodesetId ", cs_id)
-
-              # Optionally clear ValueAsString after extraction
-              if (clear_value_as_string) {
-                parsed$PrimaryCriteria$CriteriaList[[i]]$Observation$ValueAsString <- NULL
+            if (clear_value_as_string) {
+              if (obs_path == "Observation") {
+                criteria_list[[i]]$Observation$ValueAsString <- NULL
+              } else {
+                criteria_list[[i]]$Criteria$Observation$ValueAsString <- NULL
               }
             }
           }
         }
+      }
+    }
+    criteria_list
+  }
+
+  # 1. PrimaryCriteria
+  if (!is.null(parsed$PrimaryCriteria$CriteriaList)) {
+    parsed$PrimaryCriteria$CriteriaList <-
+      extractFromCriteriaList(parsed$PrimaryCriteria$CriteriaList, "PrimaryCriteria")
+  }
+
+  # 2. AdditionalCriteria groups
+  if (!is.null(parsed$AdditionalCriteria)) {
+    for (grp_idx in seq_along(parsed$AdditionalCriteria)) {
+      if (!is.null(parsed$AdditionalCriteria[[grp_idx]]$CriteriaList)) {
+        parsed$AdditionalCriteria[[grp_idx]]$CriteriaList <-
+          extractFromCriteriaList(
+            parsed$AdditionalCriteria[[grp_idx]]$CriteriaList,
+            paste0("AdditionalCriteria[", grp_idx, "]")
+          )
+      }
+    }
+  }
+
+  # 3. InclusionRules
+  if (!is.null(parsed$InclusionRules)) {
+    for (rule_idx in seq_along(parsed$InclusionRules)) {
+      rule_criteria <- parsed$InclusionRules[[rule_idx]]$expression$CriteriaList
+      if (!is.null(rule_criteria)) {
+        parsed$InclusionRules[[rule_idx]]$expression$CriteriaList <-
+          extractFromCriteriaList(
+            rule_criteria,
+            paste0("InclusionRules[", rule_idx, "]")
+          )
       }
     }
   }

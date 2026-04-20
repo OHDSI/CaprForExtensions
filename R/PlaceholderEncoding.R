@@ -20,17 +20,19 @@ PLACEHOLDER_FILTER <- "FILTER"
 PLACEHOLDER_JOIN <- "JOIN"
 PLACEHOLDER_DATE <- "DATE"
 
-#' Generate Unique Placeholder Concept ID
+#' Generate Unique Placeholder ID
 #'
 #' @description
-#' Generate a unique concept ID for a placeholder based on table name,
-#' concept IDs, and filters. Uses high numbers (999900000+) unlikely
-#' to conflict with real concepts.
+#' Generate a unique identifier for a placeholder concept set based on table name,
+#' concept IDs, and filters. This ID is used temporarily as a concept_id value in the
+#' placeholder concept set during compilation. Uses high numbers (999900000+) unlikely
+#' to conflict with real concept IDs. The placeholder concept set can contain one or
+#' more actual concept IDs from the extension table.
 #'
 #' @param table_name Character. Extension table name
 #' @param concept_ids Integer vector. Concept IDs used in the query (optional)
 #' @param filters List. Filter attributes (optional)
-#' @return Integer. Unique placeholder concept ID
+#' @return Integer. Unique placeholder ID (used as concept set identifier)
 #'
 #' @keywords internal
 generatePlaceholderConceptId <- function(table_name, concept_ids = NULL, filters = NULL) {

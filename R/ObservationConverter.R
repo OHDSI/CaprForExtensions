@@ -72,7 +72,7 @@ convertCustomQueryToObservation <- function(custom_query) {
     concept_ids <- extractConceptIds(custom_query$conceptSet)
   }
 
-  # 2. Generate UNIQUE placeholder concept ID based on table, concepts, and filters
+  # 2. Generate UNIQUE placeholder ID (concept set identifier) based on table, concepts, and filters
   # This ensures each query gets a different placeholder ID
   placeholder_id <- generatePlaceholderConceptId(
     domain@tableName,
@@ -102,7 +102,7 @@ convertCustomQueryToObservation <- function(custom_query) {
 
   # 6. Build observation query with placeholder concept
   # Note: We don't add ValueAsString here because CirceR expects a TextFilter object
-  # Instead, we rely on the placeholder concept ID to identify queries during post-processing
+  # Instead, we rely on the placeholder ID to identify queries during post-processing
   obs_query <- Capr::observation(placeholder_concept)
 
   # 7. Store extension metadata in query attributes for later retrieval
@@ -159,7 +159,7 @@ convertExtensionQueryToObservation <- function(ext_query) {
     )
   }
 
-  # 2. Generate UNIQUE placeholder concept ID based on table and filters
+  # 2. Generate UNIQUE placeholder ID (concept set identifier) based on table and filters
   # ExtensionQuery doesn't have concept_ids, but filters make it unique
   placeholder_id <- generatePlaceholderConceptId(
     ext_query@tableName,
@@ -188,7 +188,7 @@ convertExtensionQueryToObservation <- function(ext_query) {
 
   # 6. Build observation query
   # Note: We don't add ValueAsString here because CirceR expects a TextFilter object
-  # Instead, we rely on the placeholder concept ID to identify queries during post-processing
+  # Instead, we rely on the placeholder ID to identify queries during post-processing
   obs_query <- Capr::observation(placeholder_concept)
 
   # 7. Store metadata

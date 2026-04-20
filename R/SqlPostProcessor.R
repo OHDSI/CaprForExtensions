@@ -110,13 +110,13 @@ extractPlaceholderCodesetMappings <- function(sql, extension_metadata) {
 
   # For each placeholder, find which codeset_id it was assigned
   for (placeholder_id in placeholder_ids) {
-    # Find lines containing this placeholder concept_id
+    # Find lines containing this placeholder_id (used as a concept_id value)
     sql_lines <- strsplit(sql, "\n")[[1]]
     concept_line_idx <- grep(sprintf("concept_id\\s+in\\s*\\(\\s*%d\\s*\\)", placeholder_id),
                              sql_lines, perl = TRUE, ignore.case = TRUE)
 
     if (length(concept_line_idx) == 0) {
-      warning("Could not find placeholder concept_id ", placeholder_id, " in SQL")
+      warning("Could not find placeholder_id ", placeholder_id, " in SQL")
       next
     }
 
@@ -216,7 +216,7 @@ substituteExtensionQuery <- function(sql, ext_meta, schema) {
   table_name <- ext_meta$table_name
   placeholder_string <- ext_meta$placeholder_string
 
-  message("    Placeholder concept_id: ", placeholder_id)
+  message("    Placeholder ID (concept set identifier): ", placeholder_id)
   message("    Target table: ", table_name)
 
   # Decode placeholder string to get components
@@ -251,20 +251,22 @@ substituteEntireObservationBlock <- function(sql, placeholder_id, table_name, de
     table_alias <- tolower(substr(table_name, 1, min(3, nchar(table_name))))
   }
 
-  # IMPORTANT: placeholder_id is a CONCEPT_ID (e.g., 999901714)
-  # We need to find which CODESET_ID CirceR assigned to it
+  # IMPORTANT: placeholder_id is the identifier for a placeholder concept set (e.g., 999901714)
+  # It's used as a temporary concept_id value in the placeholder concept set during compilation.
+  # The concept set can contain one or more actual concept IDs from the extension table.
+  # We need to find which CODESET_ID CirceR assigned to this placeholder concept set.
   # Look in the #Codesets INSERT to find: SELECT N as codeset_id ... concept_id in (placeholder_id)
 
-  # Strategy: Find all lines that contain our placeholder concept_id
+  # Strategy: Find all lines that contain our placeholder_id
   # Then work backwards to find the associated codeset_id
 
-  # First, find the line with our concept_id
+  # First, find the line with our placeholder_id used as a concept_id value
   sql_lines <- strsplit(sql, "\n")[[1]]
   concept_line_idx <- grep(sprintf("concept_id\\s+in\\s*\\(\\s*%d\\s*\\)", placeholder_id),
                            sql_lines, perl = TRUE, ignore.case = TRUE)
 
   if (length(concept_line_idx) == 0) {
-    message("    ERROR: Could not find placeholder concept_id ", placeholder_id, " in SQL")
+    message("    ERROR: Could not find placeholder_id ", placeholder_id, " in SQL")
     return(sql)
   }
 
@@ -280,11 +282,11 @@ substituteEntireObservationBlock <- function(sql, placeholder_id, table_name, de
   }
 
   if (is.null(codeset_id)) {
-    message("    ERROR: Could not find codeset_id for placeholder concept_id ", placeholder_id)
+    message("    ERROR: Could not find codeset_id for placeholder_id ", placeholder_id)
     return(sql)
   }
 
-  message("    Found codeset_id ", codeset_id, " for placeholder concept_id ", placeholder_id)
+  message("    Found codeset_id ", codeset_id, " for placeholder_id ", placeholder_id)
 
   # Now find the observation block that uses this codeset_id
   pattern <- sprintf(
@@ -725,7 +727,7 @@ validatePostProcessedSql <- function(sql) {
   }
 
   # Note: We no longer use value_as_string placeholders, so we don't check for them
-  # The placeholder concept IDs are sufficient for identification
+  # The placeholder IDs (used as concept set identifiers) are sufficient for identification
 
   # NOTE: We do NOT check for observation table presence, as legitimate
   # observation queries may coexist with extension tables in the same cohort

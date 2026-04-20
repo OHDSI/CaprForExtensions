@@ -184,27 +184,27 @@ extensionQuery <- function(
 #' @keywords internal
 setMethod("as.list", "ExtensionQuery", function(x) {
   result <- list(
-    Name = x@name,
-    TableName = x@tableName,
-    TableSchema = x@tableSchema,
-    PersonIdField = x@personIdField,
-    DateField = x@dateField
+    name = x@name,
+    tableName = x@tableName,
+    tableSchema = x@tableSchema,
+    personIdField = x@personIdField,
+    dateField = x@dateField
   )
 
   if (length(x@selectFields) > 0) {
-    result$SelectFields <- as.list(x@selectFields)
+    result$selectFields <- as.list(x@selectFields)
   }
 
   if (length(x@filters) > 0) {
-    result$Filters <- x@filters
+    result$filters <- x@filters
   }
 
   if (length(x@temporalConstraint) > 0 && nchar(x@temporalConstraint) > 0) {
-    result$TemporalConstraint <- x@temporalConstraint
+    result$temporalConstraint <- x@temporalConstraint
   }
 
   if (length(x@attributes) > 0) {
-    result$Attributes <- x@attributes
+    result$attributes <- x@attributes
   }
 
   return(result)

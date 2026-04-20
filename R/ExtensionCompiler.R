@@ -277,7 +277,7 @@ validateExtendedCohortJson <- function(json_str) {
         # Validate each extension query
         for (i in seq_along(ext_meta$extensionQueries)) {
           ext_q <- ext_meta$extensionQueries[[i]]
-          required_ext_fields <- c("Name", "TableName", "DateField")
+          required_ext_fields <- c("name", "tableName", "dateField")
           missing_ext_fields <- setdiff(required_ext_fields, names(ext_q))
           if (length(missing_ext_fields) > 0) {
             errors <- c(errors, paste0(
@@ -299,6 +299,287 @@ validateExtendedCohortJson <- function(json_str) {
   }
 
   return(TRUE)
+}
+
+#' Export Extended Cohort to Atlas JSON Format
+#'
+#' @description
+#' Converts a CaprForExtensions JSON (with ExtensionMetadata section) to an
+#' Atlas-compatible JSON format where extension metadata is embedded in the
+#' value_as_string parameter of existing Observation queries. This allows the cohort
+#' to be loaded into Atlas where users can modify standard OMOP elements.
+#'
+#' @param json_str Character. CaprForExtensions JSON string (with ExtensionMetadata).
+#' @param concept_name_pattern Character. Pattern to identify extension concept sets
+#'   (default: "^Extension:"). Uses regex matching.
+#' @param pretty Logical. Pretty-print JSON (default: TRUE).
+#'
+#' @return Character string containing Atlas-compatible JSON with embedded extension metadata
+#'
+#' @examples
+#' \dontrun{
+#' # Compile extended cohort
+#' json_str <- compileExtendedCohort(my_cohort)
+#'
+#' # Convert to Atlas format for editing in Atlas
+#' atlas_json <- exportToAtlasJson(json_str)
+#' writeLines(atlas_json, "cohort_for_atlas.json")
+#' }
+#'
+#' @export
+exportToAtlasJson <- function(json_str,
+                               concept_name_pattern = "^Extension:",
+                               pretty = TRUE) {
+  # Parse input JSON
+  parsed <- jsonlite::fromJSON(json_str, simplifyVector = FALSE)
+
+  # Check if ExtensionMetadata exists
+  if (is.null(parsed$ExtensionMetadata)) {
+    warning("No ExtensionMetadata found in JSON. Returning original JSON.")
+    return(json_str)
+  }
+
+  # Extract extension metadata
+  ext_metadata <- parsed$ExtensionMetadata
+
+  # Check if extensionQueries exist
+  if (is.null(ext_metadata$extensionQueries) || length(ext_metadata$extensionQueries) == 0) {
+    warning("No extensionQueries found in ExtensionMetadata. Returning original JSON.")
+    return(json_str)
+  }
+
+  # Find all concept sets that match the extension pattern
+  ext_concept_sets <- list()
+  if (!is.null(parsed$ConceptSets)) {
+    for (i in seq_along(parsed$ConceptSets)) {
+      cs <- parsed$ConceptSets[[i]]
+      if (!is.null(cs$name) && grepl(concept_name_pattern, cs$name)) {
+        ext_concept_sets[[as.character(cs$id)]] <- list(
+          index = i,
+          id = cs$id,
+          name = cs$name
+        )
+      }
+    }
+  }
+
+  if (length(ext_concept_sets) == 0) {
+    warning("No extension concept sets found matching pattern: ", concept_name_pattern)
+    warning("Returning original JSON.")
+    return(json_str)
+  }
+
+  # For each extension query in metadata, find matching observation and embed metadata
+  for (i in seq_along(ext_metadata$extensionQueries)) {
+    ext_query <- ext_metadata$extensionQueries[[i]]
+
+    # Find concept set matching this extension query name
+    # Look for concept set with name like "Extension:{queryName}"
+    query_name <- ext_query$name
+
+    # Validate query name
+    if (is.null(query_name) || length(query_name) == 0 || nchar(query_name) == 0) {
+      warning("Extension query ", i, " has no name field. Skipping.")
+      next
+    }
+
+    matching_cs_id <- NULL
+
+    for (cs_id in names(ext_concept_sets)) {
+      cs_info <- ext_concept_sets[[cs_id]]
+      # Match if concept set name contains the query name
+      if (!is.null(cs_info$name) && grepl(query_name, cs_info$name, fixed = TRUE)) {
+        matching_cs_id <- cs_info$id
+        break
+      }
+    }
+
+    if (is.null(matching_cs_id)) {
+      warning("Could not find concept set for extension query: ", query_name)
+      next
+    }
+
+    # Find observation with this CodesetId and embed metadata
+    if (!is.null(parsed$PrimaryCriteria) &&
+        !is.null(parsed$PrimaryCriteria$CriteriaList)) {
+
+      for (j in seq_along(parsed$PrimaryCriteria$CriteriaList)) {
+        criterion <- parsed$PrimaryCriteria$CriteriaList[[j]]
+
+        if (!is.null(criterion$Observation) &&
+            !is.null(criterion$Observation$CodesetId) &&
+            criterion$Observation$CodesetId == matching_cs_id) {
+
+          # Serialize this specific extension query to JSON
+          query_json <- jsonlite::toJSON(
+            ext_query,
+            auto_unbox = TRUE,
+            null = "null",
+            pretty = FALSE
+          )
+
+          # Embed in ValueAsString
+          parsed$PrimaryCriteria$CriteriaList[[j]]$Observation$ValueAsString <- list(
+            Text = as.character(query_json),
+            Op = "contains"
+          )
+
+          message("Embedded extension metadata for query '", query_name,
+                  "' in observation with CodesetId ", matching_cs_id)
+          break
+        }
+      }
+    }
+  }
+
+  # Remove ExtensionMetadata section (now embedded in ValueAsString fields)
+  parsed$ExtensionMetadata <- NULL
+
+  # Convert back to JSON
+  atlas_json <- jsonlite::toJSON(
+    parsed,
+    auto_unbox = TRUE,
+    null = "null",
+    pretty = pretty
+  )
+
+  return(as.character(atlas_json))
+}
+
+#' Import Extended Cohort from Atlas JSON Format
+#'
+#' @description
+#' Converts an Atlas JSON (with extension metadata embedded in ValueAsString)
+#' back to CaprForExtensions JSON format with ExtensionMetadata section.
+#' This function extracts embedded extension metadata from the value_as_string
+#' parameters of observation queries and restores them to the ExtensionMetadata section.
+#'
+#' @param json_str Character. Atlas JSON string with embedded extension metadata.
+#' @param concept_name_pattern Character. Pattern to identify extension concept sets
+#'   (default: "^Extension:"). Uses regex matching.
+#' @param clear_value_as_string Logical. Remove the ValueAsString fields after
+#'   extracting metadata (default: FALSE, keeps them for Atlas compatibility).
+#' @param pretty Logical. Pretty-print JSON (default: TRUE).
+#'
+#' @return Character string containing CaprForExtensions JSON with ExtensionMetadata section
+#'
+#' @examples
+#' \dontrun{
+#' # Read Atlas JSON (modified in Atlas)
+#' atlas_json <- paste(readLines("cohort_from_atlas.json"), collapse = "\n")
+#'
+#' # Convert back to CaprForExtensions format
+#' extension_json <- importFromAtlasJson(atlas_json)
+#'
+#' # Validate and save
+#' validateExtendedCohortJson(extension_json)
+#' writeLines(extension_json, "cohort_definition.json")
+#' }
+#'
+#' @export
+importFromAtlasJson <- function(json_str,
+                                 concept_name_pattern = "^Extension:",
+                                 clear_value_as_string = FALSE,
+                                 pretty = TRUE) {
+  # Parse input JSON
+  parsed <- jsonlite::fromJSON(json_str, simplifyVector = FALSE)
+
+  # Find all extension concept sets
+  ext_concept_sets <- list()
+  if (!is.null(parsed$ConceptSets)) {
+    for (i in seq_along(parsed$ConceptSets)) {
+      cs <- parsed$ConceptSets[[i]]
+      if (!is.null(cs$name) && grepl(concept_name_pattern, cs$name)) {
+        ext_concept_sets[[as.character(cs$id)]] <- list(
+          index = i,
+          id = cs$id,
+          name = cs$name
+        )
+      }
+    }
+  }
+
+  if (length(ext_concept_sets) == 0) {
+    warning("No extension concept sets found matching pattern: ", concept_name_pattern)
+    warning("Returning original JSON.")
+    return(json_str)
+  }
+
+  # Collect extension queries from observations
+  extension_queries <- list()
+
+  if (!is.null(parsed$PrimaryCriteria) &&
+      !is.null(parsed$PrimaryCriteria$CriteriaList)) {
+
+    for (i in seq_along(parsed$PrimaryCriteria$CriteriaList)) {
+      criterion <- parsed$PrimaryCriteria$CriteriaList[[i]]
+
+      if (!is.null(criterion$Observation)) {
+        obs <- criterion$Observation
+        cs_id <- obs$CodesetId
+
+        # Check if this observation uses an extension concept set
+        if (!is.null(cs_id) && !is.null(ext_concept_sets[[as.character(cs_id)]])) {
+
+          # Extract metadata from ValueAsString if present
+          if (!is.null(obs$ValueAsString) && !is.null(obs$ValueAsString$Text)) {
+            ext_metadata_json <- obs$ValueAsString$Text
+
+            # Parse extension query metadata
+            ext_query <- tryCatch({
+              jsonlite::fromJSON(ext_metadata_json, simplifyVector = FALSE)
+            }, error = function(e) {
+              warning("Failed to parse extension metadata from observation with CodesetId ",
+                      cs_id, ": ", e$message)
+              return(NULL)
+            })
+
+            if (!is.null(ext_query)) {
+              extension_queries <- c(extension_queries, list(ext_query))
+
+              cs_info <- ext_concept_sets[[as.character(cs_id)]]
+              message("Extracted extension metadata for query '", ext_query$name,
+                      "' from observation with CodesetId ", cs_id)
+
+              # Optionally clear ValueAsString after extraction
+              if (clear_value_as_string) {
+                parsed$PrimaryCriteria$CriteriaList[[i]]$Observation$ValueAsString <- NULL
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (length(extension_queries) == 0) {
+    warning("No extension metadata found in ValueAsString fields of observations")
+    warning("Returning original JSON.")
+    return(json_str)
+  }
+
+  # Create ExtensionMetadata section
+  # Try to preserve existing metadata structure if present
+  existing_metadata <- parsed$ExtensionMetadata
+
+  parsed$ExtensionMetadata <- list(
+    extensionQueries = extension_queries,
+    extensionLogic = existing_metadata$extensionLogic %||% "ALL",
+    version = existing_metadata$version %||% "2.0"
+  )
+
+  message("Created ExtensionMetadata section with ", length(extension_queries), " extension quer",
+          ifelse(length(extension_queries) == 1, "y", "ies"))
+
+  # Convert back to JSON
+  extension_json <- jsonlite::toJSON(
+    parsed,
+    auto_unbox = TRUE,
+    null = "null",
+    pretty = pretty
+  )
+
+  return(as.character(extension_json))
 }
 
 # Helper for %||% operator

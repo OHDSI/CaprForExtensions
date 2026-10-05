@@ -20,7 +20,7 @@
 #' my_cohort <- cohort(
 #'   entry = entry(
 #'     conditionOccurrence(cs(descendants(201254))),
-#'     waveformFeature(qtc_concepts, valueAsNumber = numericValue("value", ">=", 450))
+#'     patientSurvey(survey_concepts, valueAsNumber = numericValue("total_score", ">=", 10))
 #'   )
 #' )
 #' json_str <- compileExtendedCohort(my_cohort, pretty = TRUE)

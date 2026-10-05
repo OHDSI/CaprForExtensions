@@ -1,14 +1,14 @@
-#' CaprForExtensions: Waveform Extension Table Support for Capr
+#' CaprForExtensions: Extension Table Support for Capr
 #'
 #' @description
 #' CaprForExtensions extends the Capr package to support cohort definitions that
-#' reference OMOP CDM Waveform Extension Tables using a placeholder substitution
+#' reference OMOP CDM Extension Tables using a placeholder substitution
 #' approach.
 #'
 #' @details
 #' This package provides:
 #' \itemize{
-#'   \item Custom domain registration for waveform and other extension tables
+#'   \item Custom domain registration for any OMOP CDM extension table
 #'   \item Placeholder substitution: extension queries converted to observation queries
 #'   \item Post-processing: CirceR SQL modified to use extension tables
 #'   \item All CirceR features work automatically (temporal logic, inclusion rules, attrition)

@@ -22,6 +22,10 @@ if (!exists(".customDomainRegistry", envir = .pkgenv)) {
 #' @slot tableSchema Character. Database schema.
 #' @slot personIdField Character. Person ID field name.
 #' @slot visitIdField Character. Visit occurrence ID field (optional, for visit-level joins).
+#' @slot primaryKeyField Character. Primary key of the table (default: "<table>_id" when empty).
+#' @slot parentTable Character. Optional parent table joined to this table (single level).
+#' @slot parentKeyField Character. Join key present in both tables (default: "<parentTable>_id").
+#' @slot dateSource Character. "self" or "parent": which table holds the start/end date fields.
 #' @slot startDateField Character. Start date field name.
 #' @slot endDateField Character. End date field (optional).
 #' @slot conceptIdField Character. Concept ID field (optional, for vocabulary integration).
@@ -39,6 +43,10 @@ setClass("CustomDomain",
            tableSchema = "character",
            personIdField = "character",
            visitIdField = "character",
+           primaryKeyField = "character",
+           parentTable = "character",
+           parentKeyField = "character",
+           dateSource = "character",
            startDateField = "character",
            endDateField = "character",
            conceptIdField = "character",
@@ -54,6 +62,10 @@ setClass("CustomDomain",
            tableSchema = "@cdm_database_schema",
            personIdField = "person_id",
            visitIdField = character(0),
+           primaryKeyField = character(0),
+           parentTable = character(0),
+           parentKeyField = character(0),
+           dateSource = "self",
            startDateField = character(0),
            endDateField = character(0),
            conceptIdField = character(0),
@@ -86,6 +98,13 @@ setValidity("CustomDomain", function(object) {
     errors <- c(errors, "domainId must be a valid identifier (letters, numbers, underscore)")
   }
 
+  if (length(object@dateSource) != 1 || !object@dateSource %in% c("self", "parent")) {
+    errors <- c(errors, "dateSource must be 'self' or 'parent'")
+  }
+  if (identical(object@dateSource, "parent") && length(object@parentTable) == 0) {
+    errors <- c(errors, "dateSource 'parent' requires parentTable")
+  }
+
   if (length(errors) == 0) TRUE else errors
 })
 
@@ -95,12 +114,18 @@ setValidity("CustomDomain", function(object) {
 #' Register a custom domain that can be used like standard OMOP domains in Capr queries.
 #' Once registered, you can create queries using the custom domain ID.
 #'
-#' @param domain_id Character. Unique identifier (used in R code, e.g., "waveformOccurrence").
-#' @param domain_name Character. Human-readable name (e.g., "Waveform Occurrence").
+#' @param domain_id Character. Unique identifier (used in R code, e.g., "patientSurvey").
+#' @param domain_name Character. Human-readable name (e.g., "Patient Survey").
 #' @param table Character. Database table name.
 #' @param schema Character. Database schema (default: "@cdm_database_schema").
 #' @param person_id_field Character. Person ID field (default: "person_id").
 #' @param visit_id_field Character. Visit occurrence ID field for visit-level joins (optional).
+#' @param primary_key_field Character. Primary key of the table (default: "<table>_id").
+#' @param parent_table Character. Optional parent table to join to (single level), for tables
+#'   that do not carry the person (and visit) fields themselves. When set, \code{person_id_field}
+#'   and \code{visit_id_field} are read from the parent table.
+#' @param parent_key_field Character. Join key present in both tables (default: "<parent_table>_id").
+#' @param date_source Character. "self" (default) or "parent": the table holding the date fields.
 #' @param start_date_field Character. Start/event date field.
 #' @param end_date_field Character. End date field (optional).
 #' @param concept_id_field Character. Concept ID field for vocabulary (optional).
@@ -151,6 +176,10 @@ registerCustomDomain <- function(
   schema = "@cdm_database_schema",
   person_id_field = "person_id",
   visit_id_field = character(0),
+  primary_key_field = character(0),
+  parent_table = character(0),
+  parent_key_field = character(0),
+  date_source = "self",
   start_date_field,
   end_date_field = character(0),
   concept_id_field = character(0),
@@ -165,6 +194,10 @@ registerCustomDomain <- function(
   checkmate::assertCharacter(table, len = 1, min.chars = 1)
   checkmate::assertCharacter(start_date_field, len = 1, min.chars = 1)
   checkmate::assertCharacter(visit_id_field, null.ok = TRUE)
+  checkmate::assertCharacter(primary_key_field, max.len = 1)
+  checkmate::assertCharacter(parent_table, max.len = 1)
+  checkmate::assertCharacter(parent_key_field, max.len = 1)
+  checkmate::assertChoice(date_source, c("self", "parent"))
 
   # Check if already registered
   if (domain_id %in% names(.pkgenv$.customDomainRegistry) && !overwrite) {
@@ -179,6 +212,10 @@ registerCustomDomain <- function(
                        tableSchema = schema,
                        personIdField = person_id_field,
                        visitIdField = if(length(visit_id_field) > 0) visit_id_field else character(0),
+                       primaryKeyField = primary_key_field,
+                       parentTable = parent_table,
+                       parentKeyField = parent_key_field,
+                       dateSource = date_source,
                        startDateField = start_date_field,
                        endDateField = end_date_field,
                        conceptIdField = concept_id_field,
@@ -308,6 +345,9 @@ setMethod("show", "CustomDomain", function(object) {
   cat("Custom Domain:", object@domainName, "(", object@domainId, ")\n", sep = "")
   cat("  Table:", object@tableSchema, ".", object@tableName, "\n", sep = "")
   cat("  Person ID:", object@personIdField, "\n")
+  if (length(object@parentTable) > 0) {
+    cat("  Parent Table:", object@parentTable, "(date from ", object@dateSource, ")\n", sep = "")
+  }
   cat("  Start Date:", object@startDateField, "\n")
 
   if (length(object@endDateField) > 0 && nchar(object@endDateField) > 0) {
@@ -420,6 +460,11 @@ exportCustomDomainRegistry <- function(path, pretty = TRUE) {
       tableName = domain@tableName,
       tableSchema = domain@tableSchema,
       personIdField = domain@personIdField,
+      visitIdField = domain@visitIdField,
+      primaryKeyField = domain@primaryKeyField,
+      parentTable = domain@parentTable,
+      parentKeyField = domain@parentKeyField,
+      dateSource = domain@dateSource,
       startDateField = domain@startDateField,
       endDateField = domain@endDateField,
       conceptIdField = domain@conceptIdField,
@@ -475,6 +520,11 @@ importCustomDomainRegistry <- function(path, overwrite = FALSE) {
         table = domain_def$tableName,
         schema = domain_def$tableSchema %||% "@cdm_database_schema",
         person_id_field = domain_def$personIdField %||% "person_id",
+        visit_id_field = domain_def$visitIdField %||% character(0),
+        primary_key_field = domain_def$primaryKeyField %||% character(0),
+        parent_table = domain_def$parentTable %||% character(0),
+        parent_key_field = domain_def$parentKeyField %||% character(0),
+        date_source = domain_def$dateSource %||% "self",
         start_date_field = domain_def$startDateField,
         end_date_field = domain_def$endDateField %||% character(0),
         concept_id_field = domain_def$conceptIdField %||% character(0),

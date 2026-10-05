@@ -185,12 +185,7 @@ substituteExtensionQueryWithCodeset <- function(sql, ext_meta, codeset_id, schem
   decoded <- decodePlaceholderString(placeholder_string)
 
   # Generate table alias
-  if (grepl("^waveform_", table_name)) {
-    suffix <- gsub("^waveform_", "", table_name)
-    table_alias <- tolower(substr(suffix, 1, min(3, nchar(suffix))))
-  } else {
-    table_alias <- tolower(substr(table_name, 1, min(3, nchar(table_name))))
-  }
+  table_alias <- makeTableAlias(table_name)
 
   # Find the observation block that uses this codeset_id
   pattern <- sprintf(
@@ -264,13 +259,7 @@ substituteExtensionQuery <- function(sql, ext_meta, schema) {
 #' @keywords internal
 substituteEntireObservationBlock <- function(sql, placeholder_id, table_name, decoded, schema) {
   # Generate table alias
-  # For waveform tables, use part after "waveform_" to ensure distinctness
-  if (grepl("^waveform_", table_name)) {
-    suffix <- gsub("^waveform_", "", table_name)
-    table_alias <- tolower(substr(suffix, 1, min(3, nchar(suffix))))
-  } else {
-    table_alias <- tolower(substr(table_name, 1, min(3, nchar(table_name))))
-  }
+  table_alias <- makeTableAlias(table_name)
 
   # IMPORTANT: placeholder_id is the identifier for a placeholder concept set (e.g., 999901714)
   # It's used as a temporary concept_id value in the placeholder concept set during compilation.
@@ -337,121 +326,108 @@ substituteEntireObservationBlock <- function(sql, placeholder_id, table_name, de
   return(sql)
 }
 
+#' Make Table Alias
+#'
+#' @description
+#' Build a short SQL alias from a table name: the initials of its underscore-separated
+#' tokens (e.g. "my_extension_table" -> "met"), or the first three characters for a
+#' single-token name. Avoids reserved words, the aliases Circe uses, and any alias in
+#' \code{avoid}.
+#'
+#' @param table_name Character. Table name
+#' @param avoid Character vector. Aliases that must not be returned
+#' @return Character. Lowercase alias
+#'
+#' @keywords internal
+makeTableAlias <- function(table_name, avoid = character(0)) {
+  tokens <- Filter(nzchar, strsplit(tolower(table_name), "_", fixed = TRUE)[[1]])
+  alias <- if (length(tokens) > 1) {
+    paste(substr(tokens, 1, 1), collapse = "")
+  } else {
+    substr(table_name, 1, min(3, nchar(table_name)))
+  }
+  alias <- tolower(alias)
+
+  reserved <- c("c", "cs", "o", "e", "as", "by", "in", "is", "on", "or", "to", "if", "no", "of", "at")
+  blocked <- c(reserved, tolower(avoid))
+  while (alias %in% blocked) {
+    alias <- paste0(alias, "x")
+  }
+  alias
+}
+
 #' Build Extension Table Query Block
 #'
 #' @description
-#' Build the complete SQL block for an extension table query
+#' Build the complete SQL block for an extension table query. When the placeholder
+#' carries a join (registered \code{parent_table}), person and visit fields are read from
+#' the parent table, and the date fields come from the parent when \code{date_source}
+#' is "parent".
 #'
 #' @keywords internal
 buildExtensionQueryBlock <- function(table_name, table_alias, decoded, schema) {
-  # Event end date: the registered end date field when there is one (falling back to start + 1 day
-  # when it is NULL, like Circe does for CDM events), otherwise start + 1 day
-  end_expr <- function(alias, start_ref = NULL) {
-    start_ref <- start_ref %||% paste0(alias, ".", decoded$date_field)
-    if (!is.null(decoded$end_date_field) && nzchar(decoded$end_date_field)) {
-      end_ref <- if (grepl("\\.", decoded$end_date_field)) decoded$end_date_field else paste0(alias, ".", decoded$end_date_field)
-      sprintf("COALESCE(%s, DATEADD(day,1,%s))", end_ref, start_ref)
-    } else {
-      sprintf("DATEADD(day,1,%s)", start_ref)
-    }
-  }
-  # Parse join info if present
+  # Resolve the join (single parent level), if any
+  parent_table <- NULL
+  join_field <- NULL
+  parent_alias <- NULL
   if (!is.null(decoded$join)) {
     join_parts <- strsplit(decoded$join, ".", fixed = TRUE)[[1]]
     if (length(join_parts) == 3) {
-      child_table <- join_parts[1]    # The child/extension table (e.g., waveform_feature)
-      parent_table <- join_parts[2]   # The parent table to join to (e.g., waveform_occurrence)
-      join_field <- join_parts[3]     # The join field (e.g., waveform_occurrence_id)
-
-      # Generate distinct aliases to avoid collisions
-      # For waveform tables, use different parts of the name
-      if (grepl("^waveform_", parent_table)) {
-        # Use part after "waveform_" to ensure distinctness
-        suffix <- gsub("^waveform_", "", parent_table)
-        parent_alias <- tolower(substr(suffix, 1, min(3, nchar(suffix))))
-      } else {
-        parent_alias <- tolower(substr(parent_table, 1, min(3, nchar(parent_table))))
-      }
-
-      # Determine event_id field (extension table's primary key)
-      event_id_field <- paste0(table_name, "_id")
-
-      # Determine which table the date field comes from
-      # Check if date field is qualified (contains ".")
-      if (grepl("\\.", decoded$date_field)) {
-        # Use as-is if qualified
-        date_ref <- decoded$date_field
-      } else {
-        # For waveform tables, date typically comes from parent (occurrence)
-        # For other tables, may come from child - make it configurable
-        date_alias <- if (grepl("waveform", table_name, ignore.case = TRUE)) {
-          parent_alias  # waveform_feature dates come from waveform_occurrence
-        } else {
-          table_alias   # default to extension table
-        }
-        date_ref <- paste0(date_alias, ".", decoded$date_field)
-      }
-      date_alias_for_end <- sub("\\..*$", "", date_ref)
-
-      # Build SQL with join
-      # Note: visit_occurrence_id is set to NULL since it's not required for extension queries
-      sql <- sprintf(
-"-- Begin %s Criteria (Extension Table)
-select C.person_id, C.%s as event_id, C.start_date, C.END_DATE,
-       C.visit_occurrence_id, C.start_date as sort_date
-from
-(
-  select %s.person_id, %s.%s, CAST(NULL AS INTEGER) as visit_occurrence_id,
-         %s as start_date, %s as end_date
-  FROM %s.%s %s
-  JOIN %s.%s %s ON %s.%s = %s.%s",
-        table_name,
-        event_id_field,
-        parent_alias, table_alias, event_id_field,
-        date_ref, end_expr(date_alias_for_end, date_ref),
-        schema, table_name, table_alias,
-        schema, parent_table, parent_alias, table_alias, join_field, parent_alias, join_field
-      )
-
-    } else {
-      # Simple case without join
-      # Note: visit_occurrence_id is set to NULL since it's not required for extension queries
-      event_id_field <- paste0(table_name, "_id")
-      sql <- sprintf(
-"-- Begin %s Criteria (Extension Table)
-select C.person_id, C.%s as event_id, C.start_date, C.END_DATE,
-       C.visit_occurrence_id, C.start_date as sort_date
-from
-(
-  select %s.person_id, %s.%s, CAST(NULL AS INTEGER) as visit_occurrence_id,
-         %s.%s as start_date, %s as end_date
-  FROM %s.%s %s",
-        table_name,
-        event_id_field,
-        table_alias, table_alias, event_id_field,
-        table_alias, decoded$date_field, end_expr(table_alias),
-        schema, table_name, table_alias
-      )
+      parent_table <- join_parts[2]
+      join_field <- join_parts[3]
+      parent_alias <- makeTableAlias(parent_table, avoid = table_alias)
     }
+  }
+  has_join <- !is.null(parent_table)
+
+  # Alias of the table holding person/visit fields, and of the table holding the dates
+  person_alias <- if (has_join) parent_alias else table_alias
+  date_alias <- if (has_join && identical(decoded$date_source, "parent")) parent_alias else table_alias
+
+  # Date references (a qualified field is used as-is)
+  qualify <- function(field, alias) {
+    if (grepl("\\.", field)) field else paste0(alias, ".", field)
+  }
+  start_ref <- qualify(decoded$date_field, date_alias)
+
+  # Event end date: the registered end date field when there is one (falling back to start + 1 day
+  # when it is NULL, like Circe does for CDM events), otherwise start + 1 day
+  if (!is.null(decoded$end_date_field) && nzchar(decoded$end_date_field)) {
+    end_ref <- qualify(decoded$end_date_field, date_alias)
+    end_sql <- sprintf("COALESCE(%s, DATEADD(day,1,%s))", end_ref, start_ref)
   } else {
-    # No join info
-    # Note: visit_occurrence_id is set to NULL since it's not required for extension queries
-    event_id_field <- paste0(table_name, "_id")
-    sql <- sprintf(
+    end_sql <- sprintf("DATEADD(day,1,%s)", start_ref)
+  }
+
+  # Key fields (defaults follow the OMOP conventions)
+  event_id_field <- if (!is.null(decoded$primary_key_field)) decoded$primary_key_field else paste0(table_name, "_id")
+  person_field <- if (!is.null(decoded$person_id_field)) decoded$person_id_field else "person_id"
+  visit_sql <- if (!is.null(decoded$visit_id_field)) {
+    sprintf("%s.%s", person_alias, decoded$visit_id_field)
+  } else {
+    "CAST(NULL AS INTEGER)"
+  }
+
+  sql <- sprintf(
 "-- Begin %s Criteria (Extension Table)
-select C.person_id, C.%s as event_id, C.start_date, C.END_DATE,
+select C.person_id, C.event_id, C.start_date, C.END_DATE,
        C.visit_occurrence_id, C.start_date as sort_date
 from
 (
-  select %s.person_id, %s.%s, CAST(NULL AS INTEGER) as visit_occurrence_id,
-         %s.%s as start_date, %s as end_date
+  select %s.%s as person_id, %s.%s as event_id, %s as visit_occurrence_id,
+         %s as start_date, %s as end_date
   FROM %s.%s %s",
-      table_name,
-      event_id_field,
-      table_alias, table_alias, event_id_field,
-      table_alias, decoded$date_field, end_expr(table_alias),
-      schema, table_name, table_alias
-    )
+    table_name,
+    person_alias, person_field, table_alias, event_id_field, visit_sql,
+    start_ref, end_sql,
+    schema, table_name, table_alias
+  )
+
+  if (has_join) {
+    sql <- paste0(sql, sprintf(
+      "\n  JOIN %s.%s %s ON %s.%s = %s.%s",
+      schema, parent_table, parent_alias, table_alias, join_field, parent_alias, join_field
+    ))
   }
 
   # Add WHERE clause with concept filter and value filters
@@ -514,7 +490,7 @@ substituteTableReferences <- function(sql, placeholder_id, table_name, schema, j
   if (is.null(join_info)) {
     # Simple case: direct table substitution
     # FROM @cdm_database_schema.OBSERVATION O
-    # → FROM @cdm_database_schema.waveform_feature WF
+    # → FROM @cdm_database_schema.my_extension_table met
 
     # Use case-insensitive matching and preserve schema placeholder format
     # Pattern needs to handle newlines and other whitespace flexibly
@@ -577,7 +553,7 @@ substituteTableReferences <- function(sql, placeholder_id, table_name, schema, j
 
   } else {
     # Complex case: need to add join to parent table
-    # Example: waveform_feature needs to join to waveform_occurrence for person_id
+    # Example: a child table needs to join to its parent table for person_id
 
     # Parse join info
     join_parts <- strsplit(join_info, ".", fixed = TRUE)[[1]]
@@ -615,8 +591,8 @@ substituteTableReferences <- function(sql, placeholder_id, table_name, schema, j
       sql <- gsub(pattern, replacement, sql, perl = TRUE, ignore.case = TRUE)
 
       # Replace old alias references with parent alias for person_id, visit_occurrence_id, dates
-      # This ensures these fields come from the parent table (waveform_occurrence)
-      # instead of the extension table (waveform_feature)
+      # This ensures these fields come from the parent table (parent)
+      # instead of the extension table (child)
       sql <- gsub(
         sprintf("\\b%s\\.(person_id|visit_occurrence_id)", old_alias),
         sprintf("%s.\\1", parent_alias),
@@ -707,7 +683,7 @@ substituteDateField <- function(sql, table_name, date_field) {
   table_alias <- substr(table_name, 1, min(3, nchar(table_name)))
 
   # Pattern: o.observation_date
-  # Replace with: wo.waveform_occurrence_start_datetime
+  # Replace with: alias.event_start_datetime
 
   # Handle different table aliases that might reference the date
   # Common patterns in CirceR SQL:

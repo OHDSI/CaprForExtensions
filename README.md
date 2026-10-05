@@ -60,8 +60,13 @@ registerCustomDomain(
   domain_id = "waveformFeature",
   domain_name = "Waveform Feature",
   table = "waveform_feature",
+  # waveform_feature has no person_id of its own: join (one level) to its parent,
+  # which supplies person_id, visit_occurrence_id and the dates
+  parent_table = "waveform_occurrence",
+  parent_key_field = "waveform_occurrence_id",
+  date_source = "parent",
   person_id_field = "person_id",
-  start_date_field = "waveform_feature_start_timestamp",
+  start_date_field = "waveform_occurrence_start_datetime",
   concept_id_field = "algorithm_concept_id"
 )
 
@@ -91,6 +96,14 @@ sql <- buildExtendedCohortQuery(cohort_json, options)
 
 # SQL now includes waveform_feature table with proper joins!
 ```
+
+### Registering tables that need a join
+
+Nothing in the package is specific to a particular extension table. If a table does not carry the person field itself,
+register a single-level parent with `parent_table` (plus `parent_key_field`, the join key present in both tables, default
+`<parent_table>_id`). The parent then supplies `person_id_field` and `visit_id_field`, and `date_source = "parent"` reads the
+start/end date fields from it. Other optional settings: `primary_key_field` (default `<table>_id`) and `visit_id_field`.
+These settings are saved by `exportCustomDomainRegistry()`.
 
 ### Filters
 

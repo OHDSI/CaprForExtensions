@@ -20,6 +20,10 @@ PLACEHOLDER_FILTER <- "FILTER"
 PLACEHOLDER_JOIN <- "JOIN"
 PLACEHOLDER_DATE <- "DATE"
 PLACEHOLDER_END_DATE <- "ENDDATE"
+PLACEHOLDER_DATE_SOURCE <- "DATESRC"
+PLACEHOLDER_PRIMARY_KEY <- "PK"
+PLACEHOLDER_PERSON <- "PERSON"
+PLACEHOLDER_VISIT <- "VISIT"
 
 #' Generate Unique Placeholder Concept Set ID
 #'
@@ -88,8 +92,8 @@ generatePlaceholderConceptSetId <- function(table_name, concept_ids = NULL, filt
 #'
 #' @examples
 #' \dontrun{
-#' encodeTablePlaceholder("waveform_feature", "wf")
-#' # Returns: "@EXT_TABLE:waveform_feature:wf@"
+#' encodeTablePlaceholder("my_extension_table", "met")
+#' # Returns: "@EXT_TABLE:my_extension_table:met@"
 #' }
 #'
 #' @keywords internal
@@ -166,7 +170,7 @@ encodeFilterPlaceholder <- function(field, operator, value) {
 #' Encode Join Placeholder
 #'
 #' @description
-#' Create placeholder for join logic (e.g., to parent waveform_occurrence table).
+#' Create placeholder for join logic (e.g., to a parent table).
 #'
 #' @param join_table Character. Table to join to
 #' @param join_field Character. Field to join on
@@ -175,8 +179,8 @@ encodeFilterPlaceholder <- function(field, operator, value) {
 #'
 #' @examples
 #' \dontrun{
-#' encodeJoinPlaceholder("waveform_occurrence", "waveform_occurrence_id")
-#' # Returns: "@EXT_JOIN:waveform_occurrence.waveform_occurrence_id@"
+#' encodeJoinPlaceholder("parent_table", "parent_table_id")
+#' # Returns: "@EXT_JOIN:parent_table.parent_table_id@"
 #' }
 #'
 #' @keywords internal
@@ -198,8 +202,8 @@ encodeJoinPlaceholder <- function(join_table, join_field, parent_table = NULL) {
 #'
 #' @examples
 #' \dontrun{
-#' encodeDatePlaceholder("waveform_occurrence_start_datetime")
-#' # Returns: "@EXT_DATE:waveform_occurrence_start_datetime@"
+#' encodeDatePlaceholder("event_start_datetime")
+#' # Returns: "@EXT_DATE:event_start_datetime@"
 #' }
 #'
 #' @keywords internal
@@ -233,6 +237,10 @@ encodeEndDatePlaceholder <- function(end_date_field) {
 #' @param join_info List. Join information (optional)
 #' @param date_field Character. Date field name
 #' @param end_date_field Character. End date field name (optional)
+#' @param date_source Character. "self" or "parent": table holding the date fields
+#' @param primary_key_field Character. Primary key of the table (optional)
+#' @param person_id_field Character. Person ID field (optional)
+#' @param visit_id_field Character. Visit occurrence ID field (optional)
 #' @return Character. Complete placeholder string
 #'
 #' @keywords internal
@@ -243,7 +251,11 @@ encodeExtensionQuery <- function(
   filters = list(),
   join_info = NULL,
   date_field = NULL,
-  end_date_field = NULL
+  end_date_field = NULL,
+  date_source = "self",
+  primary_key_field = NULL,
+  person_id_field = NULL,
+  visit_id_field = NULL
 ) {
   parts <- c()
 
@@ -302,6 +314,17 @@ encodeExtensionQuery <- function(
     parts <- c(parts, encodeEndDatePlaceholder(end_date_field))
   }
 
+  # 7. Optional structural fields
+  addField <- function(type, value) {
+    if (!is.null(value) && length(value) > 0 && nzchar(value)) {
+      parts <<- c(parts, paste0(PLACEHOLDER_PREFIX, type, ":", value, PLACEHOLDER_SUFFIX))
+    }
+  }
+  if (identical(date_source, "parent")) addField(PLACEHOLDER_DATE_SOURCE, "parent")
+  addField(PLACEHOLDER_PRIMARY_KEY, primary_key_field)
+  addField(PLACEHOLDER_PERSON, person_id_field)
+  addField(PLACEHOLDER_VISIT, visit_id_field)
+
   # Combine with separator
   paste(parts, collapse = PLACEHOLDER_SEPARATOR)
 }
@@ -325,7 +348,11 @@ decodePlaceholderString <- function(placeholder_string) {
     value_filters = list(),
     join = NULL,
     date_field = NULL,
-    end_date_field = NULL
+    end_date_field = NULL,
+    date_source = "self",
+    primary_key_field = NULL,
+    person_id_field = NULL,
+    visit_id_field = NULL
   )
 
   for (part in parts) {
@@ -347,6 +374,18 @@ decodePlaceholderString <- function(placeholder_string) {
     } else if (grepl(paste0("^", PLACEHOLDER_PREFIX, PLACEHOLDER_JOIN), part)) {
       # Join placeholder
       result$join <- extractPlaceholderValue(part, PLACEHOLDER_JOIN)
+
+    } else if (grepl(paste0("^", PLACEHOLDER_PREFIX, PLACEHOLDER_DATE_SOURCE, ":"), part)) {
+      result$date_source <- extractPlaceholderValue(part, PLACEHOLDER_DATE_SOURCE)
+
+    } else if (grepl(paste0("^", PLACEHOLDER_PREFIX, PLACEHOLDER_PRIMARY_KEY, ":"), part)) {
+      result$primary_key_field <- extractPlaceholderValue(part, PLACEHOLDER_PRIMARY_KEY)
+
+    } else if (grepl(paste0("^", PLACEHOLDER_PREFIX, PLACEHOLDER_PERSON, ":"), part)) {
+      result$person_id_field <- extractPlaceholderValue(part, PLACEHOLDER_PERSON)
+
+    } else if (grepl(paste0("^", PLACEHOLDER_PREFIX, PLACEHOLDER_VISIT, ":"), part)) {
+      result$visit_id_field <- extractPlaceholderValue(part, PLACEHOLDER_VISIT)
 
     } else if (grepl(paste0("^", PLACEHOLDER_PREFIX, PLACEHOLDER_END_DATE, ":"), part)) {
       # End date field placeholder (must be tested before the DATE prefix)

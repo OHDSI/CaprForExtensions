@@ -47,9 +47,9 @@ setMethod("as.list", "stringAttribute", function(x) {
 #'
 #' @examples
 #' \dontrun{
-#' # After registering waveformFeature domain:
-#' query <- waveformFeature(
-#'   qtc_concepts,
+#' # After registering a custom domain (e.g., "patientSurvey"):
+#' query <- patientSurvey(
+#'   survey_concepts,
 #'   valueAsNumber = numericValue("value_as_number", ">=", 450)
 #' )
 #'
@@ -82,7 +82,7 @@ convertCustomQueryToObservation <- function(custom_query) {
   )
 
   # 3. Determine if we need a join to parent table
-  # (e.g., waveform_feature needs to join to waveform_occurrence)
+  # (registered parent_table)
   join_info <- determineJoinRequirements(domain)
 
   # 4. Encode all extension query information as placeholder string
@@ -93,7 +93,11 @@ convertCustomQueryToObservation <- function(custom_query) {
     filters = custom_query$attributes,
     join_info = join_info,
     date_field = domain@startDateField,
-    end_date_field = if (length(domain@endDateField) > 0) domain@endDateField else NULL
+    end_date_field = if (length(domain@endDateField) > 0) domain@endDateField else NULL,
+    date_source = domain@dateSource,
+    primary_key_field = if (length(domain@primaryKeyField) > 0) domain@primaryKeyField else NULL,
+    person_id_field = domain@personIdField,
+    visit_id_field = if (length(domain@visitIdField) > 0) domain@visitIdField else NULL
   )
 
   # 5. Create placeholder concept set
@@ -232,53 +236,29 @@ extractConceptIds <- function(concept_set) {
 #' Determine Join Requirements
 #'
 #' @description
-#' Determine if extension table needs joins to parent tables.
-#' For example, waveform_feature doesn't have person_id directly,
-#' needs to join through waveform_occurrence.
+#' Determine whether the extension table must join to a parent table (single level),
+#' based on the domain registration (\code{parent_table}, \code{parent_key_field}).
+#' Tables that carry the person field themselves need no join.
 #'
 #' @param domain CustomDomain object
 #' @return List with join information, or NULL
 #'
 #' @keywords internal
 determineJoinRequirements <- function(domain) {
-  table <- domain@tableName
-
-  # Define known table hierarchies
-  # waveform_feature → waveform_occurrence (for person_id, visit_occurrence_id)
-  if (table == "waveform_feature") {
-    return(list(
-      table = "waveform_occurrence",
-      field = "waveform_occurrence_id",
-      parent = "waveform_feature",
-      needed_for = c("person_id", "visit_occurrence_id")
-    ))
+  if (length(domain@parentTable) == 0 || !nzchar(domain@parentTable)) {
+    return(NULL)
   }
 
-  # waveform_channel_metadata → waveform_registry → waveform_occurrence
-  if (table == "waveform_channel_metadata") {
-    return(list(
-      table = "waveform_registry",
-      field = "waveform_registry_id",
-      parent = "waveform_channel_metadata",
-      cascade = list(
-        table = "waveform_occurrence",
-        field = "waveform_occurrence_id"
-      )
-    ))
-  }
-
-  # waveform_registry → waveform_occurrence
-  if (table == "waveform_registry") {
-    return(list(
-      table = "waveform_occurrence",
-      field = "waveform_occurrence_id",
-      parent = "waveform_registry",
-      needed_for = c("person_id", "visit_occurrence_id")
-    ))
-  }
-
-  # No join needed (table has person_id directly)
-  return(NULL)
+  list(
+    table = domain@parentTable,
+    field = if (length(domain@parentKeyField) > 0 && nzchar(domain@parentKeyField)) {
+      domain@parentKeyField
+    } else {
+      paste0(domain@parentTable, "_id")
+    },
+    parent = domain@tableName,
+    needed_for = c("person_id", "visit_occurrence_id")
+  )
 }
 
 #' Encode Extension Query from ExtensionQuery Object

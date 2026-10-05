@@ -344,6 +344,17 @@ substituteEntireObservationBlock <- function(sql, placeholder_id, table_name, de
 #'
 #' @keywords internal
 buildExtensionQueryBlock <- function(table_name, table_alias, decoded, schema) {
+  # Event end date: the registered end date field when there is one (falling back to start + 1 day
+  # when it is NULL, like Circe does for CDM events), otherwise start + 1 day
+  end_expr <- function(alias, start_ref = NULL) {
+    start_ref <- start_ref %||% paste0(alias, ".", decoded$date_field)
+    if (!is.null(decoded$end_date_field) && nzchar(decoded$end_date_field)) {
+      end_ref <- if (grepl("\\.", decoded$end_date_field)) decoded$end_date_field else paste0(alias, ".", decoded$end_date_field)
+      sprintf("COALESCE(%s, DATEADD(day,1,%s))", end_ref, start_ref)
+    } else {
+      sprintf("DATEADD(day,1,%s)", start_ref)
+    }
+  }
   # Parse join info if present
   if (!is.null(decoded$join)) {
     join_parts <- strsplit(decoded$join, ".", fixed = TRUE)[[1]]
@@ -380,6 +391,7 @@ buildExtensionQueryBlock <- function(table_name, table_alias, decoded, schema) {
         }
         date_ref <- paste0(date_alias, ".", decoded$date_field)
       }
+      date_alias_for_end <- sub("\\..*$", "", date_ref)
 
       # Build SQL with join
       # Note: visit_occurrence_id is set to NULL since it's not required for extension queries
@@ -390,13 +402,13 @@ select C.person_id, C.%s as event_id, C.start_date, C.END_DATE,
 from
 (
   select %s.person_id, %s.%s, CAST(NULL AS INTEGER) as visit_occurrence_id,
-         %s as start_date, DATEADD(day,1,%s) as end_date
+         %s as start_date, %s as end_date
   FROM %s.%s %s
   JOIN %s.%s %s ON %s.%s = %s.%s",
         table_name,
         event_id_field,
         parent_alias, table_alias, event_id_field,
-        date_ref, date_ref,
+        date_ref, end_expr(date_alias_for_end, date_ref),
         schema, table_name, table_alias,
         schema, parent_table, parent_alias, table_alias, join_field, parent_alias, join_field
       )
@@ -412,12 +424,12 @@ select C.person_id, C.%s as event_id, C.start_date, C.END_DATE,
 from
 (
   select %s.person_id, %s.%s, CAST(NULL AS INTEGER) as visit_occurrence_id,
-         %s.%s as start_date, DATEADD(day,1,%s.%s) as end_date
+         %s.%s as start_date, %s as end_date
   FROM %s.%s %s",
         table_name,
         event_id_field,
         table_alias, table_alias, event_id_field,
-        table_alias, decoded$date_field, table_alias, decoded$date_field,
+        table_alias, decoded$date_field, end_expr(table_alias),
         schema, table_name, table_alias
       )
     }
@@ -432,12 +444,12 @@ select C.person_id, C.%s as event_id, C.start_date, C.END_DATE,
 from
 (
   select %s.person_id, %s.%s, CAST(NULL AS INTEGER) as visit_occurrence_id,
-         %s.%s as start_date, DATEADD(day,1,%s.%s) as end_date
+         %s.%s as start_date, %s as end_date
   FROM %s.%s %s",
       table_name,
       event_id_field,
       table_alias, table_alias, event_id_field,
-      table_alias, decoded$date_field, table_alias, decoded$date_field,
+      table_alias, decoded$date_field, end_expr(table_alias),
       schema, table_name, table_alias
     )
   }

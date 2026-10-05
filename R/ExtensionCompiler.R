@@ -105,7 +105,13 @@ compileExtendedCohort <- function(extended_cohort, pretty = FALSE) {
   modified_cohort <- convertAllCustomQueries(cohort_obj)
 
   # Compile using standard Capr (now with observation placeholders instead of custom queries)
-  base_json <- Capr::compile(modified_cohort)
+  # Capr::compile() is deprecated in favour of toCohortJson()
+  compile_fun <- if ("toCohortJson" %in% getNamespaceExports("Capr")) {
+    getExportedValue("Capr", "toCohortJson")
+  } else {
+    getExportedValue("Capr", "compile")
+  }
+  base_json <- compile_fun(modified_cohort)
 
   # Parse base JSON
   base_parsed <- jsonlite::fromJSON(base_json, simplifyVector = FALSE)

@@ -59,7 +59,8 @@ setMethod("as.list", "stringAttribute", function(x) {
 #'
 #' @export
 convertCustomQueryToObservation <- function(custom_query) {
-  if (!inherits(custom_query, "list") || custom_query$type != "CustomDomainQuery") {
+  custom_query <- customQueryPayload(custom_query)
+  if (!inherits(custom_query, "list") || is.null(custom_query$type) || custom_query$type != "CustomDomainQuery") {
     stop("Input must be a CustomDomainQuery object")
   }
 
@@ -91,7 +92,8 @@ convertCustomQueryToObservation <- function(custom_query) {
     concept_ids = concept_ids,
     filters = custom_query$attributes,
     join_info = join_info,
-    date_field = domain@startDateField
+    date_field = domain@startDateField,
+    end_date_field = if (length(domain@endDateField) > 0) domain@endDateField else NULL
   )
 
   # 5. Create placeholder concept set

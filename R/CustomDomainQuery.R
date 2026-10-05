@@ -55,8 +55,50 @@ customDomainQuery <- function(domain_id, concept_set = NULL, ...) {
     attributes = list(...)
   )
 
-  class(query_obj) <- c("CustomDomainQuery", "list")
-  return(query_obj)
+  return(newCustomDomainQuery(query_obj))
+}
+
+#' Custom Domain Query (S4)
+#'
+#' @description
+#' A custom-domain query is an S4 subclass of Capr's \code{Query}, so Capr functions that validate their
+#' arguments (\code{entry()}, \code{atLeast()}, \code{withAll()}, ...) accept it. The package-specific
+#' fields (type, domain definition, concept set, attributes) live in the \code{payload} list and are read
+#' with \code{$}, as before.
+#'
+#' @slot payload List with the custom domain query fields.
+#'
+#' @name CustomDomainQuery-class
+#' @exportClass CustomDomainQuery
+setClass("CustomDomainQuery", contains = "Query", slots = c(payload = "list"))
+
+#' @describeIn CustomDomainQuery-class Read a field of the payload
+#' @param x A CustomDomainQuery object
+#' @param name Field name
+#' @export
+setMethod("$", "CustomDomainQuery", function(x, name) x@payload[[name]])
+
+#' @describeIn CustomDomainQuery-class Print a custom domain query
+#' @param object A CustomDomainQuery object
+#' @export
+setMethod("show", "CustomDomainQuery", function(object) print.CustomDomainQuery(object))
+
+# Wrap the payload list in the S4 object (the Query slots need a ConceptSet, so use an empty one when none)
+newCustomDomainQuery <- function(payload) {
+  concept_set <- payload$conceptSet
+  if (is.null(concept_set)) {
+    concept_set <- methods::new("ConceptSet")
+  }
+  methods::new("CustomDomainQuery",
+               domain = "Observation",  # a valid Capr domain; replaced by a placeholder observation query on compile
+               conceptSet = concept_set,
+               attributes = list(),
+               payload = payload)
+}
+
+# Return the payload list of a custom domain query (accepts the S4 object or a plain list)
+customQueryPayload <- function(x) {
+  if (methods::is(x, "CustomDomainQuery")) x@payload else x
 }
 
 #' Print Method for CustomDomainQuery
@@ -69,7 +111,7 @@ print.CustomDomainQuery <- function(x, ...) {
   cat("  Domain ID:", x$domainId, "\n")
   cat("  Table:", x$customDomain@tableSchema, ".", x$customDomain@tableName, "\n", sep = "")
 
-  if (!is.null(x$conceptSet)) {
+  if (!is.null(x$conceptSet) && length(x$conceptSet@Name) > 0) {
     cat("  Concept Set:", x$conceptSet@Name, "\n")
   }
 
@@ -159,6 +201,12 @@ customDomainQueryToExtensionQuery <- function(custom_query, query_name = NULL) {
             filter_str <- paste0(field, " ", operator, " '", value, "'")
           }
           filters <- c(filters, list(filter_str))
+        }
+      } else if (attr_name == "dateRange" && is.list(attr_value)) {
+        # Date range filter
+        field <- attr_value$field
+        if (!is.null(field) && !is.null(attr_value$start_date) && !is.null(attr_value$end_date)) {
+          filters <- c(filters, list(paste0(field, " BETWEEN '", attr_value$start_date, "' AND '", attr_value$end_date, "'")))
         }
       } else if (is.character(attr_value)) {
         # Direct filter string

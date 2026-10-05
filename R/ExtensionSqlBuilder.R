@@ -117,6 +117,12 @@ buildExtensionOptions <- function(
     vocabulary_schema <- cdm_schema
   }
 
+  # CirceR uses targetTable verbatim: qualify a bare table name with the target schema
+  # (unless either is a SqlRender parameter such as @target_cohort_table)
+  if (!grepl("[.@]", target_table) && !grepl("^@", target_schema)) {
+    target_table <- paste0(target_schema, ".", target_table)
+  }
+
   CirceR::createGenerateOptions(
     cohortIdFieldName = "cohort_definition_id",
     cohortId = cohort_id,

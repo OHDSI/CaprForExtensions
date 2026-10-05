@@ -19,6 +19,7 @@ PLACEHOLDER_CONCEPT <- "CONCEPT"
 PLACEHOLDER_FILTER <- "FILTER"
 PLACEHOLDER_JOIN <- "JOIN"
 PLACEHOLDER_DATE <- "DATE"
+PLACEHOLDER_END_DATE <- "ENDDATE"
 
 #' Generate Unique Placeholder Concept Set ID
 #'
@@ -206,6 +207,19 @@ encodeDatePlaceholder <- function(date_field) {
   paste0(PLACEHOLDER_PREFIX, PLACEHOLDER_DATE, ":", date_field, PLACEHOLDER_SUFFIX)
 }
 
+#' Encode End Date Field Placeholder
+#'
+#' @description
+#' Create placeholder for the end date field of an extension table (used as the event end date).
+#'
+#' @param end_date_field Character. End date field name in extension table
+#' @return Character. Encoded placeholder
+#'
+#' @keywords internal
+encodeEndDatePlaceholder <- function(end_date_field) {
+  paste0(PLACEHOLDER_PREFIX, PLACEHOLDER_END_DATE, ":", end_date_field, PLACEHOLDER_SUFFIX)
+}
+
 #' Encode Extension Query as Placeholder String
 #'
 #' @description
@@ -218,6 +232,7 @@ encodeDatePlaceholder <- function(date_field) {
 #' @param filters List. Named list of filters
 #' @param join_info List. Join information (optional)
 #' @param date_field Character. Date field name
+#' @param end_date_field Character. End date field name (optional)
 #' @return Character. Complete placeholder string
 #'
 #' @keywords internal
@@ -227,7 +242,8 @@ encodeExtensionQuery <- function(
   concept_ids = NULL,
   filters = list(),
   join_info = NULL,
-  date_field = NULL
+  date_field = NULL,
+  end_date_field = NULL
 ) {
   parts <- c()
 
@@ -256,12 +272,14 @@ encodeExtensionQuery <- function(
         filter_def$value
       ))
     } else if (filter_name == "dateRange") {
-      # Handle date range filters
-      parts <- c(parts, encodeFilterPlaceholder(
-        filter_def$field,
-        "BETWEEN",
-        paste0(filter_def$start, " AND ", filter_def$end)
-      ))
+      # Date range: two comparisons with quoted dates (a single BETWEEN placeholder would be
+      # quoted as one string, producing invalid SQL)
+      if (!is.null(filter_def$start_date) && nzchar(filter_def$start_date)) {
+        parts <- c(parts, encodeFilterPlaceholder(filter_def$field, ">=", as.character(filter_def$start_date)))
+      }
+      if (!is.null(filter_def$end_date) && nzchar(filter_def$end_date)) {
+        parts <- c(parts, encodeFilterPlaceholder(filter_def$field, "<=", as.character(filter_def$end_date)))
+      }
     }
   }
 
@@ -277,6 +295,11 @@ encodeExtensionQuery <- function(
   # 5. Date field placeholder
   if (!is.null(date_field)) {
     parts <- c(parts, encodeDatePlaceholder(date_field))
+  }
+
+  # 6. End date field placeholder (optional)
+  if (!is.null(end_date_field) && length(end_date_field) > 0 && nzchar(end_date_field)) {
+    parts <- c(parts, encodeEndDatePlaceholder(end_date_field))
   }
 
   # Combine with separator
@@ -301,7 +324,8 @@ decodePlaceholderString <- function(placeholder_string) {
     concept_filter = NULL,
     value_filters = list(),
     join = NULL,
-    date_field = NULL
+    date_field = NULL,
+    end_date_field = NULL
   )
 
   for (part in parts) {
@@ -324,7 +348,11 @@ decodePlaceholderString <- function(placeholder_string) {
       # Join placeholder
       result$join <- extractPlaceholderValue(part, PLACEHOLDER_JOIN)
 
-    } else if (grepl(paste0("^", PLACEHOLDER_PREFIX, PLACEHOLDER_DATE), part)) {
+    } else if (grepl(paste0("^", PLACEHOLDER_PREFIX, PLACEHOLDER_END_DATE, ":"), part)) {
+      # End date field placeholder (must be tested before the DATE prefix)
+      result$end_date_field <- extractPlaceholderValue(part, PLACEHOLDER_END_DATE)
+
+    } else if (grepl(paste0("^", PLACEHOLDER_PREFIX, PLACEHOLDER_DATE, ":"), part)) {
       # Date field placeholder
       result$date_field <- extractPlaceholderValue(part, PLACEHOLDER_DATE)
     }

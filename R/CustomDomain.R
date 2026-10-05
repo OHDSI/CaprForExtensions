@@ -369,8 +369,7 @@ createCustomQueryFunction <- function(domain_id) {
       attributes = list(...)
     )
 
-    class(query_obj) <- c("CustomDomainQuery", "list")
-    return(query_obj)
+    return(newCustomDomainQuery(query_obj))
   }
 
   # Set attributes for documentation

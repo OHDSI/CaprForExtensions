@@ -33,6 +33,9 @@ export(dateRange)
 # Export classes
 exportClasses(ExtensionQuery)
 exportClasses(CustomDomain)
+exportClasses(CustomDomainQuery)
+exportMethods("$")
+exportMethods(show)
 
 # Export S3 methods
 S3method(print, CustomDomainQuery)

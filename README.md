@@ -83,11 +83,23 @@ cohort_def <- cohort(
 
 # 4. Compile and generate SQL
 cohort_json <- compileExtendedCohort(cohort_def)
-options <- buildExtensionOptions(cohort_id = 1, cdm_schema = "cdm")
+# target_table is used as given by CirceR; a bare name is qualified with target_schema
+# (generate_stats = FALSE avoids needing the CirceR inclusion-statistics tables)
+options <- buildExtensionOptions(cohort_id = 1, cdm_schema = "cdm", target_schema = "results",
+                                 target_table = "cohort", generate_stats = FALSE)
 sql <- buildExtendedCohortQuery(cohort_json, options)
 
 # SQL now includes waveform_feature table with proper joins!
 ```
+
+### Filters
+
+Custom-domain queries accept `valueAsNumber = numericValue(field, operator, value)`, `valueAsString = stringValue(field, operator, value)` and
+`dateRange = dateRange(field, start_date, end_date)` (rendered as `field >= 'start' AND field <= 'end'`). If the domain was registered with an
+`end_date_field`, it is used as the event end date (falling back to start + 1 day when it is NULL).
+
+Custom-domain queries are S4 subclasses of Capr's `Query`, so they can be used wherever Capr expects a query, including `entry()` and inclusion
+rules (`atLeast()`, `withAll()`, ...).
 
 ## Architecture
 
@@ -148,8 +160,6 @@ waveform_feature (derived measurements)
 | Function | Purpose |
 |----------|---------|
 | `extensionQuery()` | Create extension table query |
-| `extendedEntry()` | Create cohort entry with extensions |
-| `extendedCohort()` | Build complete extended cohort |
 | `compileExtendedCohort()` | Compile to JSON with extension metadata |
 | `buildExtendedCohortQuery()` | Generate SQL with placeholder substitution |
 

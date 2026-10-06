@@ -4,57 +4,6 @@
 
 CaprForExtensions extends the [Capr](https://github.com/OHDSI/Capr) package to support cohort definitions that reference OMOP CDM Extension Tables. This enables you to incorporate extension table data into OHDSI cohort definitions while leveraging ALL CirceR features automatically.
 
-## Overview
-```mermaid
-flowchart LR
-
-  %% Inputs
-  subgraph S0["Inputs"]
-    direction LR
-    B1["Concept sets: standard, curated, local"]
-    B2["Cohort settings: index event, washout, censoring"]
-    B3["CDM context: version and vocabulary"]
-  end
-
-  %% Design
-  subgraph S1["Design in R"]
-    direction LR
-    C["Define base cohort spec with Capr DSL"] --> D["Apply extensions via CaprForExtensions"]
-    D --> E["Validation and consistency checks"]
-    E --> F["Assemble final cohort design object"]
-  end
-
-  %% Build
-  subgraph S2["Build artifacts"]
-    direction LR
-    G["Compile to Circe cohort JSON using Capr compile"] --> H["Persist design artifacts: JSON, R objects, metadata"]
-  end
-
-  %% Execute
-  subgraph S3["Execute cohort"]
-    direction LR
-    I{"Choose execution path"} -->|Local| J["Run with CohortGenerator against target CDM"]
-    I -->|WebAPI or ATLAS| K["Upload JSON to WebAPI for ATLAS view and execute"]
-  end
-
-  %% Outputs
-  subgraph S4["Outputs"]
-    direction LR
-    L["Cohort tables in results schema"]
-    M["Inclusion rule stats and diagnostics"]
-    N["Versioned JSON and provenance for reproducibility"]
-  end
-
-  %% Flow connections
-  S0 --> S1
-  S1 --> S2
-  S2 --> S3
-  S3 --> S4
-
-  %% Extensions note
-  D --> X["Common extension patterns: temporal helpers; entry and exit helpers; nested criteria; reusable fragments"]
-```
-
 ## Features
 
 - **Placeholder Substitution Architecture**: Simple, robust integration using observation placeholders
